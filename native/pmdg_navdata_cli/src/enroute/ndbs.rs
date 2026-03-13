@@ -1,10 +1,7 @@
-use crate::core::db::{join_quoted_sqlite_identifiers, quote_sqlite_identifier, RustSqliteConnection};
-use crate::core::magnetic::batch_get_magnetic_variations_internal;
+use crate::core::db::RustSqliteConnection;
 use crate::core::parsers::parse_ndb_nav_file;
 use anyhow::{anyhow, Result};
-use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::Statement;
 use std::collections::HashSet;
 
 const SQLITE_MAX_VARIABLE_NUMBER: usize = 999;
@@ -13,9 +10,6 @@ const ENROUTE_NDBS_TABLE: &str = "tbl_enroute_ndbnavaids";
 #[derive(Clone)]
 struct NdbInsertRow {
     area_code: String,
-    continent: String,
-    country: String,
-    datum_code: String,
     icao_code: String,
     navaid_class: String,
     navaid_frequency: f64,
@@ -34,14 +28,8 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
-    let placeholders = vec!["?"; columns.len()].join(", ");
-    format!(
-        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-        quote_sqlite_identifier(table_name),
-        join_quoted_sqlite_identifiers(columns),
-        placeholders,
-    )
+fn build_insert_sql() -> &'static str {
+    "INSERT OR IGNORE INTO tbl_enroute_ndbnavaids (area_code, icao_code, ndb_identifier, ndb_name, ndb_frequency, navaid_class, ndb_latitude, ndb_longitude, range, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn fetch_existing_pairs_for_keys(
@@ -62,7 +50,7 @@ fn fetch_existing_pairs_for_keys(
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
             "SELECT ndb_identifier, icao_code FROM {} WHERE (ndb_identifier, icao_code) IN ({})",
-            quote_sqlite_identifier(table_name),
+            table_name,
             placeholders
         );
         let params = chunk
@@ -86,56 +74,30 @@ fn fetch_existing_pairs_for_keys(
     Ok(pairs)
 }
 
-fn bind_ndb_row_for_columns(
-    stmt: &mut Statement<'_>,
-    row: &NdbInsertRow,
-    magnetic_variation: Option<f64>,
-    columns: &[String],
-) -> rusqlite::Result<()> {
-    for (index, column) in columns.iter().enumerate() {
-        let parameter_index = index + 1;
-        match column.as_str() {
-            "area_code" => stmt.raw_bind_parameter(parameter_index, row.area_code.as_str())?,
-            "continent" => stmt.raw_bind_parameter(parameter_index, row.continent.as_str())?,
-            "country" => stmt.raw_bind_parameter(parameter_index, row.country.as_str())?,
-            "datum_code" => stmt.raw_bind_parameter(parameter_index, row.datum_code.as_str())?,
-            "icao_code" => stmt.raw_bind_parameter(parameter_index, row.icao_code.as_str())?,
-            "magnetic_variation" => {
-                if let Some(value) = magnetic_variation {
-                    stmt.raw_bind_parameter(parameter_index, value)?
-                } else {
-                    stmt.raw_bind_parameter(parameter_index, Null)?
-                }
-            }
-            "navaid_class" => stmt.raw_bind_parameter(parameter_index, row.navaid_class.as_str())?,
-            "ndb_frequency" | "navaid_frequency" => stmt.raw_bind_parameter(parameter_index, row.navaid_frequency)?,
-            "ndb_identifier" | "navaid_identifier" => {
-                stmt.raw_bind_parameter(parameter_index, row.navaid_identifier.as_str())?
-            }
-            "ndb_latitude" | "navaid_latitude" => stmt.raw_bind_parameter(parameter_index, row.navaid_latitude)?,
-            "ndb_longitude" | "navaid_longitude" => stmt.raw_bind_parameter(parameter_index, row.navaid_longitude)?,
-            "ndb_name" | "navaid_name" => stmt.raw_bind_parameter(parameter_index, row.navaid_name.as_str())?,
-            "range" => stmt.raw_bind_parameter(parameter_index, row.range)?,
-            "id" => stmt.raw_bind_parameter(parameter_index, row.id.as_str())?,
-            _ => stmt.raw_bind_parameter(parameter_index, Null)?,
-        }
-    }
+fn bind_ndb_row(stmt: &mut rusqlite::Statement<'_>, row: &NdbInsertRow) -> rusqlite::Result<()> {
+    stmt.raw_bind_parameter(1, row.area_code.as_str())?;
+    stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
+    stmt.raw_bind_parameter(3, row.navaid_identifier.as_str())?;
+    stmt.raw_bind_parameter(4, row.navaid_name.as_str())?;
+    stmt.raw_bind_parameter(5, row.navaid_frequency)?;
+    stmt.raw_bind_parameter(6, row.navaid_class.as_str())?;
+    stmt.raw_bind_parameter(7, row.navaid_latitude)?;
+    stmt.raw_bind_parameter(8, row.navaid_longitude)?;
+    stmt.raw_bind_parameter(9, row.range)?;
+    stmt.raw_bind_parameter(10, row.id.as_str())?;
     stmt.raw_execute()?;
     Ok(())
 }
 
 fn insert_rows(
     conn: &RustSqliteConnection,
-    table_name: &str,
-    columns: &[String],
     rows: &[NdbInsertRow],
-    magnetic_variations: Option<&[f64]>,
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let sql = build_insert_sql(table_name, columns);
+    let sql = build_insert_sql();
     conn.with_connection_native(|raw_conn| {
         let batch = 500;
         for start in (0..rows.len()).step_by(batch) {
@@ -143,14 +105,8 @@ fn insert_rows(
             let tx = raw_conn.unchecked_transaction()?;
             {
                 let mut stmt = tx.prepare(&sql)?;
-                for (offset, row) in rows[start..end].iter().enumerate() {
-                    let row_index = start + offset;
-                    bind_ndb_row_for_columns(
-                        &mut stmt,
-                        row,
-                        magnetic_variations.map(|values| values[row_index]),
-                        columns,
-                    )?;
+                for row in rows.iter().take(end).skip(start) {
+                    bind_ndb_row(&mut stmt, row)?;
                 }
             }
             tx.commit()?;
@@ -169,8 +125,6 @@ pub(crate) fn process_ndbs_to_db(
             &[],
         )
         .map_err(sqlite_error)?;
-    let columns = conn.get_table_columns_native(ENROUTE_NDBS_TABLE)?;
-
     let parsed_rows = parse_ndb_nav_file(dat_file_path)
         .map_err(|err| anyhow!("parse_ndb_nav_file failed: {}", err))?;
     let unique_pairs = parsed_rows
@@ -216,15 +170,6 @@ pub(crate) fn process_ndbs_to_db(
         return Ok(0);
     }
 
-    let magnetic_variations = if columns.iter().any(|column| column == "magnetic_variation") {
-        Some(
-            batch_get_magnetic_variations_internal(&coordinates)
-                .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {}", err))?,
-        )
-    } else {
-        None
-    };
-
     let rows: Vec<NdbInsertRow> = pending_rows
         .into_iter()
         .map(
@@ -238,9 +183,6 @@ pub(crate) fn process_ndbs_to_db(
                 ndb_range,
             )| NdbInsertRow {
                 area_code: area_code_for_icao(&icao_code).to_string(),
-                continent: "ASIA".to_string(),
-                country: "CHINA".to_string(),
-                datum_code: "WGE".to_string(),
                 id: format!("{}{}", icao_code, navaid_identifier),
                 icao_code,
                 navaid_class: "H W".to_string(),
@@ -254,7 +196,7 @@ pub(crate) fn process_ndbs_to_db(
         )
         .collect();
 
-    insert_rows(conn, ENROUTE_NDBS_TABLE, &columns, &rows, magnetic_variations.as_deref())
+    insert_rows(conn, &rows)
         .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(rows.len())
 }

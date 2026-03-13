@@ -1,5 +1,4 @@
 use crate::core::db::RustSqliteConnection;
-use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use crate::enroute::airways::parse_dms_list;
 use anyhow::{anyhow, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
@@ -26,26 +25,28 @@ struct AirportInsertRow {
     airport_name: String,
     airport_ref_latitude: f64,
     airport_ref_longitude: f64,
-    airport_type: String,
     area_code: String,
     ata_iata_code: Option<String>,
-    city: String,
-    continent: String,
-    country_3letter: String,
-    country: String,
     elevation: Option<i64>,
-    fuel: String,
     icao_code: String,
     ifr_capability: String,
     longest_runway_surface_code: String,
-    magnetic_variation: f64,
     speed_limit_altitude: i64,
     speed_limit: i64,
-    state_2letter: String,
-    state: String,
-    time_zone: String,
     transition_altitude: Option<i64>,
     transition_level: Option<i64>,
+    id: String,
+}
+
+fn area_code_for_icao(icao_code: &str) -> &'static str {
+    match icao_code {
+        "VH" | "VM" => "PAC",
+        _ => "EEU",
+    }
+}
+
+fn build_insert_sql() -> &'static str {
+    "INSERT OR IGNORE INTO tbl_airports (area_code, icao_code, airport_identifier, airport_identifier_3letter, airport_name, airport_ref_latitude, airport_ref_longitude, ifr_capability, longest_runway_surface_code, elevation, transition_altitude, transition_level, speed_limit, speed_limit_altitude, iata_ata_designator, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn decode_gb18030_file(file_path: &str) -> Result<String> {
@@ -251,40 +252,27 @@ fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Result<Vec<AirportInsert
         return Ok(Vec::new());
     }
 
-    let coordinates: Vec<(f64, f64)> = rows
-        .iter()
-        .map(|row| (row.latitude, row.longitude))
-        .collect();
-    let declinations = batch_get_magnetic_variations_internal(&coordinates)?;
     let mut out = Vec::with_capacity(rows.len());
 
-    for (row, magnetic_variation) in rows.iter().zip(declinations) {
-        let (city, airport_name) = parse_names(row.txt_name.as_deref())?;
+    for row in rows {
+        let (_, airport_name) = parse_names(row.txt_name.as_deref())?;
+        let icao_code: String = row.code_id.chars().take(2).collect();
         out.push(AirportInsertRow {
             airport_identifier: row.code_id.clone(),
             airport_name,
             airport_ref_latitude: row.latitude,
             airport_ref_longitude: row.longitude,
-            airport_type: "C".to_string(),
-            area_code: "EEU".to_string(),
+            area_code: area_code_for_icao(&icao_code).to_string(),
             ata_iata_code: row.code_iata.clone(),
-            city,
-            continent: "ASIA".to_string(),
-            country_3letter: "CHN".to_string(),
-            country: "CHINA".to_string(),
             elevation: round_feet(row.val_elev),
-            fuel: "NNNNNNNNNYNNNN".to_string(),
-            icao_code: row.code_id.chars().take(2).collect(),
+            icao_code: icao_code.clone(),
             ifr_capability: "Y".to_string(),
             longest_runway_surface_code: "H".to_string(),
-            magnetic_variation,
             speed_limit_altitude: 10000,
             speed_limit: 250,
-            state_2letter: String::new(),
-            state: String::new(),
-            time_zone: "H00".to_string(),
             transition_altitude: round_feet_hundreds(row.val_transition_alt),
             transition_level: round_feet_hundreds(row.val_transition_level),
+            id: format!("{}{}", icao_code, row.code_id),
         });
     }
 
@@ -294,7 +282,7 @@ fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Result<Vec<AirportInsert
 fn get_existing_airports(conn: &RustSqliteConnection) -> Result<HashSet<String>> {
     let mut out = HashSet::new();
     conn.query_each_native(
-        "SELECT airport_identifier FROM tbl_pa_airports",
+        "SELECT airport_identifier FROM tbl_airports",
         &[],
         |row| {
             out.insert(row.get::<_, String>(0)?);
@@ -305,55 +293,50 @@ fn get_existing_airports(conn: &RustSqliteConnection) -> Result<HashSet<String>>
     Ok(out)
 }
 
-fn bind_airport_row(
-    stmt: &mut rusqlite::Statement<'_>,
-    row: &AirportInsertRow,
-) -> rusqlite::Result<()> {
-    stmt.raw_bind_parameter(1, row.airport_identifier.as_str())?;
-    stmt.raw_bind_parameter(2, row.airport_name.as_str())?;
-    stmt.raw_bind_parameter(3, row.airport_ref_latitude)?;
-    stmt.raw_bind_parameter(4, row.airport_ref_longitude)?;
-    stmt.raw_bind_parameter(5, row.airport_type.as_str())?;
-    stmt.raw_bind_parameter(6, row.area_code.as_str())?;
+fn bind_airport_row(stmt: &mut rusqlite::Statement<'_>, row: &AirportInsertRow) -> rusqlite::Result<()> {
+    stmt.raw_bind_parameter(1, row.area_code.as_str())?;
+    stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
+    stmt.raw_bind_parameter(3, row.airport_identifier.as_str())?;
     match &row.ata_iata_code {
-        Some(v) => stmt.raw_bind_parameter(7, v.as_str())?,
-        None => stmt.raw_bind_parameter(7, rusqlite::types::Null)?,
+        Some(v) => stmt.raw_bind_parameter(4, v.as_str())?,
+        None => stmt.raw_bind_parameter(4, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(8, row.city.as_str())?;
-    stmt.raw_bind_parameter(9, row.continent.as_str())?;
-    stmt.raw_bind_parameter(10, row.country_3letter.as_str())?;
-    stmt.raw_bind_parameter(11, row.country.as_str())?;
+    stmt.raw_bind_parameter(5, row.airport_name.as_str())?;
+    stmt.raw_bind_parameter(6, row.airport_ref_latitude)?;
+    stmt.raw_bind_parameter(7, row.airport_ref_longitude)?;
+    stmt.raw_bind_parameter(8, row.ifr_capability.as_str())?;
+    stmt.raw_bind_parameter(9, row.longest_runway_surface_code.as_str())?;
     match row.elevation {
+        Some(v) => stmt.raw_bind_parameter(10, v)?,
+        None => stmt.raw_bind_parameter(10, rusqlite::types::Null)?,
+    }
+    match row.transition_altitude {
+        Some(v) => stmt.raw_bind_parameter(11, v)?,
+        None => stmt.raw_bind_parameter(11, rusqlite::types::Null)?,
+    }
+    match row.transition_level {
         Some(v) => stmt.raw_bind_parameter(12, v)?,
         None => stmt.raw_bind_parameter(12, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(13, row.fuel.as_str())?;
-    stmt.raw_bind_parameter(14, row.icao_code.as_str())?;
-    stmt.raw_bind_parameter(15, row.ifr_capability.as_str())?;
-    stmt.raw_bind_parameter(16, row.longest_runway_surface_code.as_str())?;
-    stmt.raw_bind_parameter(17, row.magnetic_variation)?;
-    stmt.raw_bind_parameter(18, row.speed_limit_altitude)?;
-    stmt.raw_bind_parameter(19, row.speed_limit)?;
-    stmt.raw_bind_parameter(20, row.state_2letter.as_str())?;
-    stmt.raw_bind_parameter(21, row.state.as_str())?;
-    stmt.raw_bind_parameter(22, row.time_zone.as_str())?;
-    match row.transition_altitude {
-        Some(v) => stmt.raw_bind_parameter(23, v)?,
-        None => stmt.raw_bind_parameter(23, rusqlite::types::Null)?,
+    stmt.raw_bind_parameter(13, row.speed_limit)?;
+    stmt.raw_bind_parameter(14, row.speed_limit_altitude)?;
+    match &row.ata_iata_code {
+        Some(v) => stmt.raw_bind_parameter(15, v.as_str())?,
+        None => stmt.raw_bind_parameter(15, rusqlite::types::Null)?,
     }
-    match row.transition_level {
-        Some(v) => stmt.raw_bind_parameter(24, v)?,
-        None => stmt.raw_bind_parameter(24, rusqlite::types::Null)?,
-    }
+    stmt.raw_bind_parameter(16, row.id.as_str())?;
     stmt.raw_execute()?;
     Ok(())
 }
 
-fn insert_airport_rows(conn: &RustSqliteConnection, rows: &[AirportInsertRow]) -> Result<()> {
+fn insert_airport_rows(
+    conn: &RustSqliteConnection,
+    rows: &[AirportInsertRow],
+) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
-    let sql = "INSERT OR IGNORE INTO tbl_pa_airports (airport_identifier, airport_name, airport_ref_latitude, airport_ref_longitude, airport_type, area_code, ata_iata_code, city, continent, country_3letter, country, elevation, fuel, icao_code, ifr_capability, longest_runway_surface_code, magnetic_variation, speed_limit_altitude, speed_limit, state_2letter, state, time_zone, transition_altitude, transition_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let sql = build_insert_sql();
 
     conn.with_connection_native(|raw_conn| {
         let actual_batch = 500; // heuristics
@@ -361,7 +344,7 @@ fn insert_airport_rows(conn: &RustSqliteConnection, rows: &[AirportInsertRow]) -
             let end = (start + actual_batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(sql)?;
+                let mut stmt = tx.prepare(&sql)?;
                 for row in &rows[start..end] {
                     bind_airport_row(&mut stmt, row)?;
                 }
@@ -401,7 +384,7 @@ fn insert_zlyx_if_missing(
                     let latitude: f64 = row.get(3)?;
                     let longitude: f64 = row.get(4)?;
                     let elevation: Option<i64> = row.get(5)?;
-                    let magnetic_variation: f64 = row.get(6)?;
+                    let _magnetic_variation: f64 = row.get(6)?;
                     let transition_altitude: Option<i64> = row.get(7)?;
                     let transition_level: Option<i64> = row.get(8)?;
 
@@ -409,31 +392,23 @@ fn insert_zlyx_if_missing(
                         Some(value) => Some(value),
                         None => Some(String::new()),
                     };
+                    let icao_code: String = airport_identifier.chars().take(2).collect();
                     zlyx = Some(AirportInsertRow {
                         airport_identifier: airport_identifier.clone(),
                         airport_name: airport_name.clone(),
                         airport_ref_latitude: latitude,
                         airport_ref_longitude: longitude,
-                        airport_type: "C".to_string(),
-                        area_code: "EEU".to_string(),
+                        area_code: area_code_for_icao(&icao_code).to_string(),
                         ata_iata_code,
-                        city: airport_name,
-                        continent: "ASIA".to_string(),
-                        country_3letter: "CHN".to_string(),
-                        country: "CHINA".to_string(),
                         elevation,
-                        fuel: "NNNNNNNNNYNNNN".to_string(),
-                        icao_code: airport_identifier.chars().take(2).collect(),
+                        icao_code: icao_code.clone(),
                         ifr_capability: "Y".to_string(),
                         longest_runway_surface_code: "H".to_string(),
-                        magnetic_variation,
                         speed_limit_altitude: 10000,
                         speed_limit: 250,
-                        state_2letter: String::new(),
-                        state: String::new(),
-                        time_zone: "H00".to_string(),
                         transition_altitude: transition_altitude.or(Some(0)),
                         transition_level: transition_level.or(Some(0)),
+                        id: format!("{}{}", icao_code, airport_identifier),
                     });
                     Ok(())
                 },
@@ -461,7 +436,7 @@ pub(crate) fn process_airports_to_db(
         .map_err(|err| anyhow!("build_airport_insert_rows failed: {}", err))?;
 
     conn.execute_statement_native(
-            "CREATE TABLE IF NOT EXISTS tbl_pa_airports (airport_identifier TEXT PRIMARY KEY, airport_name TEXT, airport_ref_latitude REAL, airport_ref_longitude REAL, airport_type TEXT, area_code TEXT, ata_iata_code TEXT, city TEXT, continent TEXT, country_3letter TEXT, country TEXT, elevation INTEGER, fuel TEXT, icao_code TEXT, ifr_capability TEXT, longest_runway_surface_code TEXT, magnetic_variation REAL, speed_limit_altitude INTEGER, speed_limit INTEGER, state_2letter TEXT, state TEXT, time_zone TEXT, transition_altitude INTEGER, transition_level INTEGER, UNIQUE(icao_code, airport_identifier))",
+            "CREATE TABLE IF NOT EXISTS tbl_airports (area_code TEXT(3), icao_code TEXT(2) NOT NULL, airport_identifier TEXT(4) NOT NULL, airport_identifier_3letter TEXT(3), airport_name TEXT(3), airport_ref_latitude DOUBLE(9), airport_ref_longitude DOUBLE(10), ifr_capability TEXT(1), longest_runway_surface_code TEXT(1), elevation INTEGER(5), transition_altitude INTEGER(5), transition_level INTEGER(5), speed_limit INTEGER(3), speed_limit_altitude INTEGER(5), iata_ata_designator TEXT(3), id TEXT(15))",
             &[],
         )
         .map_err(sqlite_error)?;

@@ -99,16 +99,6 @@ impl RustSqliteConnection {
         action(conn)
     }
 
-    pub fn get_table_columns_native(&self, table_name: &str) -> rusqlite::Result<Vec<String>> {
-        let query = format!("PRAGMA table_info({})", quote_sqlite_identifier(table_name));
-        let mut columns = Vec::new();
-        self.query_each_native(&query, &[], |row| {
-            columns.push(row.get::<_, String>(1)?);
-            Ok(())
-        })?;
-        Ok(columns)
-    }
-
     pub fn optimize_native(&self) -> rusqlite::Result<()> {
         for pragma in SQLITE_OPTIMIZATIONS {
             self.execute_statement_native(pragma, &[])?;
@@ -141,14 +131,6 @@ impl RustSqliteConnection {
 
 pub(crate) fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
-pub(crate) fn join_quoted_sqlite_identifiers(identifiers: &[String]) -> String {
-    identifiers
-        .iter()
-        .map(|identifier| quote_sqlite_identifier(identifier))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn shared_connections() -> &'static Mutex<HashMap<String, ConnectionHandle>> {
@@ -273,20 +255,11 @@ pub(crate) fn ensure_nav_id_indexes(db_path: &str, timeout: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{join_quoted_sqlite_identifiers, quote_sqlite_identifier};
+    use super::quote_sqlite_identifier;
 
     #[test]
     fn quotes_sqlite_identifier_and_escapes_inner_quotes() {
         assert_eq!(quote_sqlite_identifier("simple_name"), "\"simple_name\"");
         assert_eq!(quote_sqlite_identifier("bad\"name"), "\"bad\"\"name\"");
-    }
-
-    #[test]
-    fn joins_quoted_sqlite_identifiers() {
-        let identifiers = vec!["alpha".to_string(), "beta\"gamma".to_string()];
-        assert_eq!(
-            join_quoted_sqlite_identifiers(&identifiers),
-            "\"alpha\", \"beta\"\"gamma\""
-        );
     }
 }

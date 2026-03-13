@@ -10,6 +10,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Cursor};
 
 const DAT_READER_CAPACITY: usize = 256 * 1024;
+const ENROUTE_AIRWAYS_TABLE: &str = "tbl_enroute_airways";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AirwayCodeType {
@@ -48,10 +49,6 @@ struct ParsedAirwayCsvRow {
     inbound_distance: f64,
     end_waypoint: Option<Box<str>>,
     end_code_type: Option<AirwayCodeType>,
-    end_latitude: Option<f64>,
-    end_longitude: Option<f64>,
-    start_latitude: Option<f64>,
-    start_longitude: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -67,7 +64,6 @@ struct AirwayRecord {
     minimum_altitude1: Option<i64>,
     minimum_altitude2: Option<f64>,
     outbound_course: f64,
-    route_identifier_postfix: Option<String>,
     route_identifier: String,
     route_type: String,
     seqno: i64,
@@ -75,7 +71,7 @@ struct AirwayRecord {
     waypoint_identifier: String,
     waypoint_latitude: Option<f64>,
     waypoint_longitude: Option<f64>,
-    waypoint_ref_table: String,
+    id: Option<String>,
 }
 
 type AirwayAidType = &'static str;
@@ -96,8 +92,8 @@ type CsvRouteMap = HashMap<String, Vec<CsvRoutePoint>>;
 type DbRouteMap = HashMap<String, Vec<DbRoutePoint>>;
 type ExistingRouteWaypoint = (String, String);
 type MaxSeqItem = (String, i64);
-type AirwayEndCsvLastRow = (String, Option<String>, Option<f64>, Option<AirwayCodeType>, Option<f64>, Option<f64>);
-type AirwayEndAppendPlanRow = (String, String, f64, Option<AirwayCodeType>, String, String, Option<f64>, Option<f64>, i64);
+type AirwayEndCsvLastRow = (String, Option<String>, Option<f64>, Option<AirwayCodeType>);
+type AirwayEndAppendPlanRow = (String, String, f64, Option<AirwayCodeType>, String, String, i64);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RowSource {
@@ -383,7 +379,7 @@ fn trim_csv_field(field: &str) -> &str {
     field.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'))
 }
 
-fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 11]> {
+fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 7]> {
     let header = line.strip_prefix('\u{feff}').unwrap_or(line);
     let mut index_map = HashMap::new();
     for (idx, field) in header.trim_end_matches(|ch| matches!(ch, '\r' | '\n')).split(',').enumerate() {
@@ -404,10 +400,6 @@ fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 11]> {
         required("CODE_TYPE_START")?,
         optional("CODE_POINT_END"),
         optional("CODE_TYPE_END"),
-        optional("GEO_LAT_END_ACCURACY"),
-        optional("GEO_LONG_END_ACCURACY"),
-        optional("GEO_LAT_START_ACCURACY"),
-        optional("GEO_LONG_START_ACCURACY"),
         optional("VAL_MAG_TRACK"),
         optional("VAL_LEN"),
     ])
@@ -477,7 +469,7 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
         return Ok(Vec::new());
     }
 
-    let [route_idx, start_wp_idx, start_code_idx, end_wp_idx, end_code_idx, end_lat_idx, end_lon_idx, start_lat_idx, start_lon_idx, mag_track_idx, len_idx] =
+    let [route_idx, start_wp_idx, start_code_idx, end_wp_idx, end_code_idx, mag_track_idx, len_idx] =
         parse_csv_header_indices_simple(&line)?;
 
     let mut out = Vec::new();
@@ -487,7 +479,7 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
             break;
         }
 
-        let [route, start_wp, start_code, end_wp, end_code, end_lat, end_lon, start_lat, start_lon, mag_track, length] =
+        let [route, start_wp, start_code, end_wp, end_code, mag_track, length] =
             extract_csv_fields_simple(
                 &line,
                 &[
@@ -496,10 +488,6 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
                     start_code_idx,
                     end_wp_idx,
                     end_code_idx,
-                    end_lat_idx,
-                    end_lon_idx,
-                    start_lat_idx,
-                    start_lon_idx,
                     mag_track_idx,
                     len_idx,
                 ],
@@ -514,10 +502,6 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
                 / 100.0,
             end_waypoint: optional_field_value(end_wp),
             end_code_type: end_code.filter(|value| !value.is_empty()).map(AirwayCodeType::parse),
-            end_latitude: end_lat.and_then(parse_dms_to_decimal),
-            end_longitude: end_lon.and_then(parse_dms_to_decimal),
-            start_latitude: start_lat.and_then(parse_dms_to_decimal),
-            start_longitude: start_lon.and_then(parse_dms_to_decimal),
         });
     }
 
@@ -585,7 +569,7 @@ fn load_earth_fix_items(
     required_identifiers: &HashSet<Box<str>>,
 ) -> Result<Vec<(String, String)>> {
     let allowed = [
-        "ZB", "ZS", "ZJ", "ZG", "ZY", "ZL", "ZU", "ZW", "ZP", "ZH", "VM", "VH", "RK",
+        "ZB", "ZS", "ZJ", "ZG", "ZY", "ZL", "ZU", "ZW", "ZP", "ZH", "ZZ", "VM", "VH", "RK",
     ];
     let allowed: HashSet<&str> = allowed.into_iter().collect();
     let mut out = Vec::with_capacity(required_identifiers.len());
@@ -636,7 +620,7 @@ fn load_earth_nav_items(
     required_ndb_identifiers: &HashSet<Box<str>>,
 ) -> Result<Vec<(String, String, String)>> {
     let allowed = [
-        "ZB", "ZS", "ZJ", "ZG", "ZY", "ZL", "ZU", "ZW", "ZP", "ZH", "VM", "VH", "RK",
+        "ZB", "ZS", "ZJ", "ZG", "ZY", "ZL", "ZU", "ZW", "ZP", "ZH", "ZZ", "VM", "VH", "RK",
     ];
     let allowed: HashSet<&str> = allowed.into_iter().collect();
     let mut out = Vec::with_capacity(required_vor_dme_identifiers.len() + required_ndb_identifiers.len());
@@ -756,16 +740,28 @@ fn prefetch_airway_coordinates(
 ) -> Result<AirwayCoordCache> {
     let mut identifiers_by_type: HashMap<AirwayAidType, HashSet<Box<str>>> = HashMap::new();
     for row in rows {
-        let Some((aid_type, _, _)) = start_code_mapping_from_type(row.start_code_type) else {
+        if let Some((aid_type, _, _)) = start_code_mapping_from_type(row.start_code_type) {
+            if !row.start_waypoint.is_empty() {
+                identifiers_by_type
+                    .entry(aid_type)
+                    .or_default()
+                    .insert(row.start_waypoint.clone());
+            }
+        }
+
+        let Some(end_waypoint) = row.end_waypoint.as_ref().filter(|value| !value.is_empty()) else {
             continue;
         };
-        if row.start_waypoint.is_empty() {
+        let Some(end_code_type) = row.end_code_type else {
             continue;
-        }
+        };
+        let Some((aid_type, _, _)) = start_code_mapping_from_type(end_code_type) else {
+            continue;
+        };
         identifiers_by_type
             .entry(aid_type)
             .or_default()
-            .insert(row.start_waypoint.clone());
+            .insert(end_waypoint.clone());
     }
 
     let mut cache = AirwayCoordCache::default();
@@ -781,13 +777,13 @@ fn prefetch_airway_coordinates(
 
         let query_template = match aid_type {
             "fix" => {
-                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             "vhf" => {
-                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             "ndb" => {
-                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             _ => continue,
         };
@@ -823,30 +819,52 @@ fn airway_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AirwayRec
         area_code: row
             .get::<_, Option<String>>(0)?
             .unwrap_or_else(|| "EEU".to_string()),
-        crusing_table_identifier: row.get(1)?,
-        direction_restriction: row.get(2)?,
-        flightlevel: row
-            .get::<_, Option<String>>(3)?
-            .unwrap_or_else(|| "B".to_string()),
-        icao_code: row.get(4)?,
-        inbound_course: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-        inbound_distance: row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
-        maximum_altitude: row.get(7)?,
-        minimum_altitude1: row.get(8)?,
-        minimum_altitude2: row.get(9)?,
-        outbound_course: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
-        route_identifier_postfix: row.get(11)?,
-        route_identifier: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+        route_identifier: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        seqno: row.get::<_, Option<i64>>(2)?.unwrap_or(1000),
+        icao_code: row.get(3)?,
+        waypoint_identifier: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        waypoint_latitude: row.get(5)?,
+        waypoint_longitude: row.get(6)?,
+        waypoint_description_code: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
         route_type: row
-            .get::<_, Option<String>>(13)?
+            .get::<_, Option<String>>(8)?
             .unwrap_or_else(|| "O".to_string()),
-        seqno: row.get::<_, Option<i64>>(14)?.unwrap_or(1000),
-        waypoint_description_code: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
-        waypoint_identifier: row.get::<_, Option<String>>(16)?.unwrap_or_default(),
-        waypoint_latitude: row.get(17)?,
-        waypoint_longitude: row.get(18)?,
-        waypoint_ref_table: row.get::<_, Option<String>>(19)?.unwrap_or_default(),
+        flightlevel: row
+            .get::<_, Option<String>>(9)?
+            .unwrap_or_else(|| "B".to_string()),
+        direction_restriction: row.get(10)?,
+        crusing_table_identifier: row.get(11)?,
+        minimum_altitude1: row.get(12)?,
+        minimum_altitude2: row.get(13)?,
+        maximum_altitude: row.get(14)?,
+        outbound_course: row.get::<_, Option<f64>>(15)?.unwrap_or(0.0),
+        inbound_course: row.get::<_, Option<f64>>(16)?.unwrap_or(0.0),
+        inbound_distance: row.get::<_, Option<f64>>(17)?.unwrap_or(0.0),
+        id: row
+            .get::<_, Option<String>>(18)?
+            .filter(|value| !value.trim().is_empty()),
     })
+}
+
+fn build_airway_reference_id(
+    ref_table: &str,
+    icao_code: Option<&str>,
+    waypoint_identifier: &str,
+) -> Option<String> {
+    let icao_code = icao_code.map(str::trim).filter(|value| !value.is_empty())?;
+    let waypoint_identifier = waypoint_identifier.trim();
+    if waypoint_identifier.is_empty() {
+        return None;
+    }
+
+    let raw_id = match ref_table {
+        "tbl_enroute_waypoints" | "tbl_vhfnavaids" | "tbl_enroute_ndbnavaids" => {
+            format!("{}{}", icao_code, waypoint_identifier)
+        }
+        _ => return None,
+    };
+
+    Some(format!("{}|{}", ref_table, raw_id))
 }
 
 fn build_processed_airway_rows(
@@ -858,6 +876,10 @@ fn build_processed_airway_rows(
     let mut previous_outbound_by_route: HashMap<String, f64> = HashMap::new();
 
     for row in rows {
+        let icao_code = icao_resolver.resolve_ref(
+            Some(row.start_waypoint.as_ref()),
+            row.start_code_type.resolver_code(),
+        );
         let inbound_course = previous_outbound_by_route
             .get(row.route_identifier.as_ref())
             .copied()
@@ -868,9 +890,7 @@ fn build_processed_airway_rows(
             if let Some((aid_type, description_code, ref_table)) =
                 start_code_mapping_from_type(row.start_code_type)
             {
-                let coords = coord_cache
-                    .get(aid_type, row.start_waypoint.as_ref())
-                    .or_else(|| row.start_latitude.zip(row.start_longitude));
+                let coords = coord_cache.get(aid_type, row.start_waypoint.as_ref());
                 (
                     description_code.to_string(),
                     ref_table.to_string(),
@@ -886,17 +906,13 @@ fn build_processed_airway_rows(
             crusing_table_identifier: Some("EE".to_string()),
             direction_restriction: None,
             flightlevel: "B".to_string(),
-            icao_code: icao_resolver.resolve_ref(
-                Some(row.start_waypoint.as_ref()),
-                row.start_code_type.resolver_code(),
-            ),
+            icao_code: icao_code.clone(),
             inbound_course,
             inbound_distance: row.inbound_distance,
             maximum_altitude: Some(99999),
             minimum_altitude1: Some(5000),
             minimum_altitude2: None,
             outbound_course: row.outbound_course,
-            route_identifier_postfix: None,
             route_identifier: row.route_identifier.to_string(),
             route_type: "O".to_string(),
             seqno: 0,
@@ -904,7 +920,11 @@ fn build_processed_airway_rows(
             waypoint_identifier: row.start_waypoint.to_string(),
             waypoint_latitude,
             waypoint_longitude,
-            waypoint_ref_table,
+            id: build_airway_reference_id(
+                waypoint_ref_table.as_str(),
+                icao_code.as_deref(),
+                row.start_waypoint.as_ref(),
+            ),
         });
     }
 
@@ -919,7 +939,8 @@ fn fetch_existing_airway_rows(
     for chunk in routes.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let query = format!(
-            "SELECT area_code, crusing_table_identifier, direction_restriction, flightlevel, icao_code, inbound_course, inbound_distance, maximum_altitude, minimum_altitude1, minimum_altitude2, outbound_course, route_identifier_postfix, route_identifier, route_type, seqno, waypoint_description_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_ref_table FROM tbl_er_enroute_airways WHERE route_identifier IN ({}) ORDER BY route_identifier, seqno",
+            "SELECT area_code, route_identifier, seqno, icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, route_type, flightlevel, direction_restriction, crusing_table_identifier, minimum_altitude1, minimum_altitude2, maximum_altitude, outbound_course, inbound_course, inbound_distance, id FROM {} WHERE route_identifier IN ({}) ORDER BY route_identifier, seqno",
+            ENROUTE_AIRWAYS_TABLE,
             placeholders
         );
         let params = chunk
@@ -939,6 +960,7 @@ fn append_airway_end_rows(
     final_rows: &mut Vec<AirwayRecord>,
     csv_rows: &[ParsedAirwayCsvRow],
     route_order: &[String],
+    coord_cache: &AirwayCoordCache,
     icao_resolver: &IcaoCodeResolver,
 ) {
     let existing_route_wps: Vec<ExistingRouteWaypoint> = final_rows
@@ -974,8 +996,6 @@ fn append_airway_end_rows(
             row.end_waypoint.as_deref().map(str::to_string),
             Some(row.outbound_course),
             row.end_code_type,
-            row.end_latitude,
-            row.end_longitude,
         ));
     }
 
@@ -987,87 +1007,92 @@ fn append_airway_end_rows(
         end_code_type,
         end_description_code,
         end_ref_table,
-        end_lat,
-        end_lon,
         seqno,
     ) in end_plan
     {
+        let icao_code = icao_resolver.resolve_ref(
+            Some(end_wp.as_str()),
+            end_code_type.and_then(AirwayCodeType::resolver_code),
+        );
+        let coords = end_code_type
+            .and_then(start_code_mapping_from_type)
+            .and_then(|(aid_type, _, _)| coord_cache.get(aid_type, end_wp.as_str()));
+        let id = build_airway_reference_id(
+            end_ref_table.as_str(),
+            icao_code.as_deref(),
+            &end_wp,
+        );
         final_rows.push(AirwayRecord {
             area_code: "EEU".to_string(),
             crusing_table_identifier: Some("EE".to_string()),
             direction_restriction: None,
             flightlevel: "B".to_string(),
-            icao_code: icao_resolver.resolve_ref(
-                Some(end_wp.as_str()),
-                end_code_type.and_then(AirwayCodeType::resolver_code),
-            ),
+            icao_code: icao_code.clone(),
             inbound_course,
             inbound_distance: 0.0,
             maximum_altitude: Some(99999),
             minimum_altitude1: Some(5000),
             minimum_altitude2: None,
             outbound_course: 0.0,
-            route_identifier_postfix: None,
             route_identifier: route,
             route_type: "O".to_string(),
             seqno,
             waypoint_description_code: end_description_code,
             waypoint_identifier: end_wp,
-            waypoint_latitude: end_lat,
-            waypoint_longitude: end_lon,
-            waypoint_ref_table: end_ref_table,
+            waypoint_latitude: coords.map(|value| value.0),
+            waypoint_longitude: coords.map(|value| value.1),
+            id,
         });
     }
 }
 
 fn bind_airway_row(stmt: &mut rusqlite::Statement<'_>, row: &AirwayRecord) -> rusqlite::Result<()> {
     stmt.raw_bind_parameter(1, row.area_code.as_str())?;
-    match &row.crusing_table_identifier {
-        Some(v) => stmt.raw_bind_parameter(2, v.as_str())?,
-        None => stmt.raw_bind_parameter(2, rusqlite::types::Null)?,
-    }
-    match &row.direction_restriction {
-        Some(v) => stmt.raw_bind_parameter(3, v.as_str())?,
-        None => stmt.raw_bind_parameter(3, rusqlite::types::Null)?,
-    }
-    stmt.raw_bind_parameter(4, row.flightlevel.as_str())?;
+    stmt.raw_bind_parameter(2, row.route_identifier.as_str())?;
+    stmt.raw_bind_parameter(3, row.seqno)?;
     match &row.icao_code {
-        Some(v) => stmt.raw_bind_parameter(5, v.as_str())?,
-        None => stmt.raw_bind_parameter(5, rusqlite::types::Null)?,
+        Some(v) => stmt.raw_bind_parameter(4, v.as_str())?,
+        None => stmt.raw_bind_parameter(4, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(6, row.inbound_course)?;
-    stmt.raw_bind_parameter(7, row.inbound_distance)?;
-    match row.maximum_altitude {
-        Some(v) => stmt.raw_bind_parameter(8, v)?,
-        None => stmt.raw_bind_parameter(8, rusqlite::types::Null)?,
+    stmt.raw_bind_parameter(5, row.waypoint_identifier.as_str())?;
+    match row.waypoint_latitude {
+        Some(v) => stmt.raw_bind_parameter(6, v)?,
+        None => stmt.raw_bind_parameter(6, rusqlite::types::Null)?,
     }
-    match row.minimum_altitude1 {
-        Some(v) => stmt.raw_bind_parameter(9, v)?,
-        None => stmt.raw_bind_parameter(9, rusqlite::types::Null)?,
+    match row.waypoint_longitude {
+        Some(v) => stmt.raw_bind_parameter(7, v)?,
+        None => stmt.raw_bind_parameter(7, rusqlite::types::Null)?,
     }
-    match row.minimum_altitude2 {
-        Some(v) => stmt.raw_bind_parameter(10, v)?,
-        None => stmt.raw_bind_parameter(10, rusqlite::types::Null)?,
+    stmt.raw_bind_parameter(8, row.waypoint_description_code.as_str())?;
+    stmt.raw_bind_parameter(9, row.route_type.as_str())?;
+    stmt.raw_bind_parameter(10, row.flightlevel.as_str())?;
+    match &row.direction_restriction {
+        Some(v) => stmt.raw_bind_parameter(11, v.as_str())?,
+        None => stmt.raw_bind_parameter(11, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(11, row.outbound_course)?;
-    match &row.route_identifier_postfix {
+    match &row.crusing_table_identifier {
         Some(v) => stmt.raw_bind_parameter(12, v.as_str())?,
         None => stmt.raw_bind_parameter(12, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(13, row.route_identifier.as_str())?;
-    stmt.raw_bind_parameter(14, row.route_type.as_str())?;
-    stmt.raw_bind_parameter(15, row.seqno)?;
-    stmt.raw_bind_parameter(16, row.waypoint_description_code.as_str())?;
-    stmt.raw_bind_parameter(17, row.waypoint_identifier.as_str())?;
-    match row.waypoint_latitude {
-        Some(v) => stmt.raw_bind_parameter(18, v)?,
-        None => stmt.raw_bind_parameter(18, rusqlite::types::Null)?,
+    match row.minimum_altitude1 {
+        Some(v) => stmt.raw_bind_parameter(13, v)?,
+        None => stmt.raw_bind_parameter(13, rusqlite::types::Null)?,
     }
-    match row.waypoint_longitude {
-        Some(v) => stmt.raw_bind_parameter(19, v)?,
+    match row.minimum_altitude2 {
+        Some(v) => stmt.raw_bind_parameter(14, v)?,
+        None => stmt.raw_bind_parameter(14, rusqlite::types::Null)?,
+    }
+    match row.maximum_altitude {
+        Some(v) => stmt.raw_bind_parameter(15, v)?,
+        None => stmt.raw_bind_parameter(15, rusqlite::types::Null)?,
+    }
+    stmt.raw_bind_parameter(16, row.outbound_course)?;
+    stmt.raw_bind_parameter(17, row.inbound_course)?;
+    stmt.raw_bind_parameter(18, row.inbound_distance)?;
+    match row.id.as_deref().filter(|value| !value.trim().is_empty()) {
+        Some(value) => stmt.raw_bind_parameter(19, value)?,
         None => stmt.raw_bind_parameter(19, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(20, row.waypoint_ref_table.as_str())?;
     stmt.raw_execute()?;
     Ok(())
 }
@@ -1077,12 +1102,12 @@ fn insert_airway_rows(
     rows: &[AirwayRecord],
     batch_size: usize,
 ) -> Result<()> {
-    let insert_sql = "INSERT INTO tbl_er_enroute_airways (area_code, crusing_table_identifier, direction_restriction, flightlevel, icao_code, inbound_course, inbound_distance, maximum_altitude, minimum_altitude1, minimum_altitude2, outbound_course, route_identifier_postfix, route_identifier, route_type, seqno, waypoint_description_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_ref_table) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let insert_sql = "INSERT INTO tbl_enroute_airways (area_code, route_identifier, seqno, icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, route_type, flightlevel, direction_restriction, crusing_table_identifier, minimum_altitude1, minimum_altitude2, maximum_altitude, outbound_course, inbound_course, inbound_distance, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     for chunk in rows.chunks(batch_size.max(1)) {
         conn.with_connection_native(|raw_conn| {
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(insert_sql)?;
+                let mut stmt = tx.prepare(&insert_sql)?;
                 for row in chunk {
                     bind_airway_row(&mut stmt, row)?;
                 }
@@ -1180,8 +1205,8 @@ pub(crate) fn process_airways_to_db(
     let csv_rows = parse_airway_csv_rows(csv_file)
         .map_err(|err| anyhow!("parse_airway_csv_rows failed: {}", err))?;
 
-    conn.execute_statement_native("CREATE TABLE IF NOT EXISTS tbl_er_enroute_airways (area_code TEXT, crusing_table_identifier TEXT DEFAULT 'XX', direction_restriction TEXT, flightlevel TEXT DEFAULT 'B', icao_code TEXT, inbound_course REAL, inbound_distance REAL, maximum_altitude INTEGER DEFAULT 99999, minimum_altitude1 INTEGER DEFAULT 0, minimum_altitude2 REAL, outbound_course REAL, route_identifier_postfix TEXT, route_identifier TEXT, route_type TEXT, seqno INTEGER, waypoint_description_code TEXT, waypoint_identifier TEXT, waypoint_latitude REAL, waypoint_longitude REAL, waypoint_ref_table TEXT)", &[]).map_err(sqlite_error)?;
-    conn.execute_statement_native("CREATE INDEX IF NOT EXISTS idx_er_airways_route_seq ON tbl_er_enroute_airways(route_identifier, seqno)", &[]).map_err(sqlite_error)?;
+    conn.execute_statement_native("CREATE TABLE IF NOT EXISTS tbl_enroute_airways (area_code TEXT(3), route_identifier TEXT(6), seqno INTEGER(4), icao_code TEXT(2), waypoint_identifier TEXT(5), waypoint_latitude DOUBLE(9), waypoint_longitude DOUBLE(10), waypoint_description_code TEXT(4), route_type TEXT(1), flightlevel TEXT(1), direction_restriction TEXT(1), crusing_table_identifier TEXT(2), minimum_altitude1 INTEGER(5), minimum_altitude2 INTEGER(5), maximum_altitude INTEGER(5), outbound_course DOUBLE(5), inbound_course DOUBLE(5), inbound_distance DOUBLE(5), id TEXT(15))", &[]).map_err(sqlite_error)?;
+    conn.execute_statement_native("CREATE INDEX IF NOT EXISTS idx_enroute_airways_route_seq ON tbl_enroute_airways(route_identifier, seqno)", &[]).map_err(sqlite_error)?;
 
     if csv_rows.is_empty() {
         return Ok((0, 0));
@@ -1246,7 +1271,8 @@ pub(crate) fn process_airways_to_db(
     for chunk in routes_to_delete.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let query = format!(
-            "DELETE FROM tbl_er_enroute_airways WHERE route_identifier IN ({})",
+            "DELETE FROM {} WHERE route_identifier IN ({})",
+            ENROUTE_AIRWAYS_TABLE,
             placeholders
         );
         let params = chunk
@@ -1263,7 +1289,13 @@ pub(crate) fn process_airways_to_db(
         merged_rows_all
     };
 
-    append_airway_end_rows(&mut final_rows, &csv_rows, &unique_routes, &icao_resolver);
+    append_airway_end_rows(
+        &mut final_rows,
+        &csv_rows,
+        &unique_routes,
+        &coord_cache,
+        &icao_resolver,
+    );
 
     final_rows.sort_by(|left, right| {
         left.route_identifier
@@ -1301,7 +1333,7 @@ fn build_airway_end_append_plan(
 
     let mut out = Vec::new();
 
-    for (route, end_wp_opt, inbound_opt, end_code_type, end_latitude, end_longitude) in csv_last_rows {
+    for (route, end_wp_opt, inbound_opt, end_code_type) in csv_last_rows {
         let Some(end_wp_raw) = end_wp_opt else {
             continue;
         };
@@ -1337,8 +1369,6 @@ fn build_airway_end_append_plan(
             end_code_type,
             end_description_code,
             end_ref_table,
-            end_latitude,
-            end_longitude,
             new_seqno,
         ));
     }
@@ -1349,6 +1379,19 @@ fn build_airway_end_append_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_test_file(prefix: &str, contents: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{}_{}.dat", prefix, unique));
+        fs::write(&path, contents).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn airway_segment_metrics_default_when_coordinates_missing() {
         let tasks = vec![
@@ -1381,6 +1424,41 @@ mod tests {
 
         let result = build_airway_segment_metrics(tasks, declinations);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_earth_fix_items_keeps_zz_records() {
+        let path = write_temp_test_file(
+            "airway_fix_zz",
+            "31.0 121.0 FIXZZ ENRT ZZ\n31.0 121.0 FIXZS ENRT ZS\n",
+        );
+        let required = HashSet::from([Box::<str>::from("FIXZZ"), Box::<str>::from("FIXZS")]);
+
+        let rows = load_earth_fix_items(&path, &required).unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert!(rows.iter().any(|(identifier, icao)| identifier == "FIXZZ" && icao == "ZZ"));
+        assert!(rows.iter().any(|(identifier, icao)| identifier == "FIXZS" && icao == "ZS"));
+    }
+
+    #[test]
+    fn load_earth_nav_items_keeps_zz_records() {
+        let path = write_temp_test_file(
+            "airway_nav_zz",
+            "12 31.0 121.0 10 11320 50 X NAVZZ ENRT ZZ NAVNAME VOR/DME\n2 30.0 120.0 0 375 25 X NDBZZ ENRT ZZ NDBNAME NDB\n",
+        );
+        let vor_required = HashSet::from([Box::<str>::from("NAVZZ")]);
+        let ndb_required = HashSet::from([Box::<str>::from("NDBZZ")]);
+
+        let rows = load_earth_nav_items(&path, &vor_required, &ndb_required).unwrap();
+        fs::remove_file(path).unwrap();
+
+        assert!(rows.iter().any(|(identifier, nav_type, icao)| {
+            identifier == "NAVZZ" && nav_type == "VOR/DME" && icao == "ZZ"
+        }));
+        assert!(rows.iter().any(|(identifier, nav_type, icao)| {
+            identifier == "NDBZZ" && nav_type == "NDB" && icao == "ZZ"
+        }));
     }
 
 }

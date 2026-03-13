@@ -1,10 +1,7 @@
-use crate::core::db::{join_quoted_sqlite_identifiers, quote_sqlite_identifier, RustSqliteConnection};
-use crate::core::magnetic::batch_get_magnetic_variations_internal;
+use crate::core::db::RustSqliteConnection;
 use crate::core::parsers::parse_enroute_waypoints_file;
 use anyhow::{anyhow, Result};
-use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::Statement;
 use std::collections::HashSet;
 
 const SQLITE_MAX_VARIABLE_NUMBER: usize = 999;
@@ -13,9 +10,6 @@ const ENROUTE_WAYPOINTS_TABLE: &str = "tbl_enroute_waypoints";
 #[derive(Clone)]
 struct EnrouteWaypointRow {
     area_code: String,
-    continent: String,
-    country: String,
-    datum_code: String,
     icao_code: String,
     waypoint_identifier: String,
     waypoint_latitude: f64,
@@ -33,14 +27,8 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
-    let placeholders = vec!["?"; columns.len()].join(", ");
-    format!(
-        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-        quote_sqlite_identifier(table_name),
-        join_quoted_sqlite_identifiers(columns),
-        placeholders,
-    )
+fn build_insert_sql() -> &'static str {
+    "INSERT OR IGNORE INTO tbl_enroute_waypoints (area_code, icao_code, waypoint_identifier, waypoint_name, waypoint_type, waypoint_usage, waypoint_latitude, waypoint_longitude, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn fetch_existing_pairs_for_keys(
@@ -61,7 +49,7 @@ fn fetch_existing_pairs_for_keys(
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
             "SELECT icao_code, waypoint_identifier FROM {} WHERE (icao_code, waypoint_identifier) IN ({})",
-            quote_sqlite_identifier(table_name),
+            table_name,
             placeholders
         );
         let params = chunk
@@ -86,68 +74,37 @@ fn fetch_existing_pairs_for_keys(
 }
 
 fn ensure_enroute_waypoints_index(conn: &RustSqliteConnection, table_name: &str) -> Result<()> {
-    let index_name = format!("idx_{}_icao_identifier", table_name);
     let sql = format!(
-        "CREATE INDEX IF NOT EXISTS {} ON {}(icao_code, waypoint_identifier)",
-        quote_sqlite_identifier(&index_name),
-        quote_sqlite_identifier(table_name)
+        "CREATE INDEX IF NOT EXISTS idx_{}_icao_identifier ON {}(icao_code, waypoint_identifier)",
+        table_name, table_name
     );
     conn.execute_statement_native(&sql, &[]).map_err(sqlite_error)?;
     Ok(())
 }
 
-fn bind_enroute_row_for_columns(
-    stmt: &mut Statement<'_>,
-    row: &EnrouteWaypointRow,
-    magnetic_variation: Option<f64>,
-    columns: &[String],
-) -> rusqlite::Result<()> {
-    for (index, column) in columns.iter().enumerate() {
-        let parameter_index = index + 1;
-        match column.as_str() {
-            "area_code" => stmt.raw_bind_parameter(parameter_index, row.area_code.as_str())?,
-            "continent" => stmt.raw_bind_parameter(parameter_index, row.continent.as_str())?,
-            "country" => stmt.raw_bind_parameter(parameter_index, row.country.as_str())?,
-            "datum_code" => stmt.raw_bind_parameter(parameter_index, row.datum_code.as_str())?,
-            "icao_code" => stmt.raw_bind_parameter(parameter_index, row.icao_code.as_str())?,
-            "magnetic_variation" => {
-                if let Some(value) = magnetic_variation {
-                    stmt.raw_bind_parameter(parameter_index, value)?
-                } else {
-                    stmt.raw_bind_parameter(parameter_index, Null)?
-                }
-            }
-            "waypoint_identifier" => {
-                stmt.raw_bind_parameter(parameter_index, row.waypoint_identifier.as_str())?
-            }
-            "waypoint_latitude" => stmt.raw_bind_parameter(parameter_index, row.waypoint_latitude)?,
-            "waypoint_longitude" => stmt.raw_bind_parameter(parameter_index, row.waypoint_longitude)?,
-            "waypoint_name" => stmt.raw_bind_parameter(parameter_index, row.waypoint_name.as_str())?,
-            "waypoint_type" => stmt.raw_bind_parameter(parameter_index, row.waypoint_type.as_str())?,
-            "waypoint_usage" => stmt.raw_bind_parameter(parameter_index, row.waypoint_usage.as_str())?,
-            "id" => stmt.raw_bind_parameter(parameter_index, row.id.as_str())?,
-            _ => stmt.raw_bind_parameter(parameter_index, Null)?,
-        }
-    }
+fn bind_enroute_row(stmt: &mut rusqlite::Statement<'_>, row: &EnrouteWaypointRow) -> rusqlite::Result<()> {
+    stmt.raw_bind_parameter(1, row.area_code.as_str())?;
+    stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
+    stmt.raw_bind_parameter(3, row.waypoint_identifier.as_str())?;
+    stmt.raw_bind_parameter(4, row.waypoint_name.as_str())?;
+    stmt.raw_bind_parameter(5, row.waypoint_type.as_str())?;
+    stmt.raw_bind_parameter(6, row.waypoint_usage.as_str())?;
+    stmt.raw_bind_parameter(7, row.waypoint_latitude)?;
+    stmt.raw_bind_parameter(8, row.waypoint_longitude)?;
+    stmt.raw_bind_parameter(9, row.id.as_str())?;
     stmt.raw_execute()?;
     Ok(())
 }
 
 fn insert_rows(
     conn: &RustSqliteConnection,
-    table_name: &str,
-    columns: &[String],
     rows: &[EnrouteWaypointRow],
-    magnetic_variations: Option<&[f64]>,
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
-    if magnetic_variations.is_some_and(|values| values.len() != rows.len()) {
-        return Err(anyhow!("rows and declinations length mismatch"));
-    }
 
-    let sql = build_insert_sql(table_name, columns);
+    let sql = build_insert_sql();
     conn.with_connection_native(|raw_conn| {
         let batch = 500;
         for start in (0..rows.len()).step_by(batch) {
@@ -155,14 +112,8 @@ fn insert_rows(
             let tx = raw_conn.unchecked_transaction()?;
             {
                 let mut stmt = tx.prepare(&sql)?;
-                for (offset, row) in rows[start..end].iter().enumerate() {
-                    let row_index = start + offset;
-                    bind_enroute_row_for_columns(
-                        &mut stmt,
-                        row,
-                        magnetic_variations.map(|values| values[row_index]),
-                        columns,
-                    )?;
+                for row in rows.iter().take(end).skip(start) {
+                    bind_enroute_row(&mut stmt, row)?;
                 }
             }
             tx.commit()?;
@@ -217,25 +168,12 @@ pub(crate) fn process_enroute_waypoints_to_db(
         return Ok(0);
     }
 
-    let columns = conn.get_table_columns_native(ENROUTE_WAYPOINTS_TABLE)?;
-    let magnetic_variations = if columns.iter().any(|column| column == "magnetic_variation") {
-        Some(
-            batch_get_magnetic_variations_internal(&coordinates)
-                .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {}", err))?,
-        )
-    } else {
-        None
-    };
-
     let insert_rows_payload: Vec<EnrouteWaypointRow> = rows
         .into_iter()
         .map(
             |(icao_code, waypoint_identifier, waypoint_type, latitude, longitude)| EnrouteWaypointRow {
                 id: format!("{}{}", icao_code, waypoint_identifier),
                 area_code: area_code_for_icao(&icao_code).to_string(),
-                continent: "ASIA".to_string(),
-                country: "CHINA".to_string(),
-                datum_code: "WGE".to_string(),
                 icao_code,
                 waypoint_identifier: waypoint_identifier.clone(),
                 waypoint_latitude: latitude,
@@ -247,14 +185,7 @@ pub(crate) fn process_enroute_waypoints_to_db(
         )
         .collect();
 
-    insert_rows(
-        conn,
-        ENROUTE_WAYPOINTS_TABLE,
-        &columns,
-        &insert_rows_payload,
-        magnetic_variations.as_deref(),
-    )
-        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &insert_rows_payload).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(insert_rows_payload.len())
 }
 

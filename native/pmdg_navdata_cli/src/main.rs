@@ -48,7 +48,7 @@ struct TerminalCifpStepConfig {
 }
 
 const SIDS_STEP_CONFIG: TerminalCifpStepConfig = TerminalCifpStepConfig {
-    table_name: "tbl_pd_sids",
+    table_name: "tbl_sids",
     procedure_prefix: "SID:",
     airport_col_idx: 4,
     procedure_col_idx: 7,
@@ -58,7 +58,7 @@ const SIDS_STEP_CONFIG: TerminalCifpStepConfig = TerminalCifpStepConfig {
 };
 
 const STARS_STEP_CONFIG: TerminalCifpStepConfig = TerminalCifpStepConfig {
-    table_name: "tbl_pe_stars",
+    table_name: "tbl_stars",
     procedure_prefix: "STAR:",
     airport_col_idx: 5,
     procedure_col_idx: 8,
@@ -68,7 +68,7 @@ const STARS_STEP_CONFIG: TerminalCifpStepConfig = TerminalCifpStepConfig {
 };
 
 const IAPS_STEP_CONFIG: TerminalCifpStepConfig = TerminalCifpStepConfig {
-    table_name: "tbl_pf_iaps",
+    table_name: "tbl_iaps",
     procedure_prefix: "APPCH:",
     airport_col_idx: 6,
     procedure_col_idx: 9,
@@ -392,7 +392,7 @@ fn run_terminal_waypoints_step(
         let (parsed_count, new_count) = process_terminal_waypoints_file_to_db(
             &config.path_to_fix_dat,
             &config.db_output_path,
-            "tbl_pc_terminal_waypoints",
+            "tbl_terminal_waypoints",
             timeout,
             500,
             1000,

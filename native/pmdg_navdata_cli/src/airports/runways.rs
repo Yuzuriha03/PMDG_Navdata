@@ -45,20 +45,28 @@ struct RunwayInsertRow {
     landing_threshold_elevation: i64,
     llz_identifier: Option<String>,
     llz_mls_gls_category: Option<i64>,
-    part_time_lights: String,
     runway_gradient: f64,
     runway_identifier: String,
     runway_latitude: f64,
     runway_length: i64,
-    runway_lights: String,
     runway_longitude: f64,
     runway_magnetic_bearing: f64,
     runway_true_bearing: f64,
     runway_width: i64,
     surface_code: String,
     threshold_crossing_height: i64,
-    traffic_pattern_altitude: Option<f64>,
-    traffic_pattern: Option<String>,
+    id: String,
+}
+
+fn area_code_for_icao(icao_code: &str) -> &'static str {
+    match icao_code {
+        "VH" | "VM" => "PAC",
+        _ => "EEU",
+    }
+}
+
+fn build_insert_sql() -> &'static str {
+    "INSERT OR IGNORE INTO tbl_runways (area_code, icao_code, airport_identifier, runway_identifier, runway_latitude, runway_longitude, runway_gradient, runway_magnetic_bearing, runway_true_bearing, landing_threshold_elevation, displaced_threshold_distance, threshold_crossing_height, runway_length, runway_width, llz_identifier, llz_mls_gls_category, surface_code, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn python_round(value: f64) -> i64 {
@@ -317,7 +325,7 @@ fn get_llz_info(
 fn fetch_existing_runways(conn: &RustSqliteConnection) -> Result<HashSet<(String, String)>> {
     let mut out = HashSet::new();
     conn.query_each_native(
-        "SELECT airport_identifier, runway_identifier FROM tbl_pg_runways",
+        "SELECT airport_identifier, runway_identifier FROM tbl_runways",
         &[],
         |row| {
             let airport_identifier: String = row.get(0)?;
@@ -405,33 +413,31 @@ fn build_primary_rows(
         let runway_width = python_round(runway_width_m * FEET_PER_METER);
         let (llz_identifier, llz_mls_gls_category) =
             get_llz_info(&airport_icao, runway_identifier, ils_map);
+        let icao_code = if airport_icao.len() >= 2 {
+            airport_icao[..2].to_string()
+        } else {
+            "UN".to_string()
+        };
 
         rows.push(RunwayInsertRow {
             airport_identifier: airport_icao.clone(),
-            area_code: "EEU".to_string(),
+            area_code: area_code_for_icao(&icao_code).to_string(),
             displaced_threshold_distance: displaced_dist,
-            icao_code: if airport_icao.len() >= 2 {
-                airport_icao[..2].to_string()
-            } else {
-                "UN".to_string()
-            },
+            icao_code: icao_code.clone(),
             landing_threshold_elevation: threshold_elev,
             llz_identifier,
             llz_mls_gls_category,
-            part_time_lights: "N".to_string(),
             runway_gradient: 0.0,
-            runway_identifier: formatted_runway_identifier,
+            runway_identifier: formatted_runway_identifier.clone(),
             runway_latitude: ((*runway_lat * 1e8).round()) / 1e8,
             runway_length,
-            runway_lights: "Y".to_string(),
             runway_longitude: ((*runway_lon * 1e8).round()) / 1e8,
             runway_magnetic_bearing: mag_bearing as f64,
             runway_true_bearing: true_bearing,
             runway_width,
             surface_code: surface_code_from_num_surface(runway_data.num_surface),
             threshold_crossing_height: 50,
-            traffic_pattern_altitude: None,
-            traffic_pattern: None,
+            id: format!("{}{}{}", airport_icao, icao_code, formatted_runway_identifier),
         });
     }
 
@@ -490,32 +496,30 @@ fn build_supplementary_rows(
             }
 
             let (llz_identifier, llz_mls_gls_category) = get_llz_info(&icao, &ident, ils_map);
+            let icao_code = if icao.len() >= 2 {
+                icao[..2].to_string()
+            } else {
+                "UN".to_string()
+            };
             out.push(RunwayInsertRow {
                 airport_identifier: icao.clone(),
-                area_code: "EEU".to_string(),
+                area_code: area_code_for_icao(&icao_code).to_string(),
                 displaced_threshold_distance: 0,
-                icao_code: if icao.len() >= 2 {
-                    icao[..2].to_string()
-                } else {
-                    "UN".to_string()
-                },
+                icao_code: icao_code.clone(),
                 landing_threshold_elevation: python_round(landing_threshold_elevation),
                 llz_identifier,
                 llz_mls_gls_category,
-                part_time_lights: "N".to_string(),
                 runway_gradient: 0.0,
-                runway_identifier,
+                runway_identifier: runway_identifier.clone(),
                 runway_latitude,
                 runway_length: python_round(runway_length_m * FEET_PER_METER),
-                runway_lights: "Y".to_string(),
                 runway_longitude,
                 runway_magnetic_bearing,
                 runway_true_bearing,
                 runway_width: python_round(runway_width_m * FEET_PER_METER),
                 surface_code: "CONC".to_string(),
                 threshold_crossing_height: 50,
-                traffic_pattern_altitude: None,
-                traffic_pattern: None,
+                id: format!("{}{}{}", icao, icao_code, runway_identifier),
             });
             Ok(())
         })
@@ -526,60 +530,51 @@ fn build_supplementary_rows(
     result
 }
 
-fn bind_runway_row(
-    stmt: &mut rusqlite::Statement<'_>,
-    row: &RunwayInsertRow,
-) -> rusqlite::Result<()> {
-    stmt.raw_bind_parameter(1, row.airport_identifier.as_str())?;
-    stmt.raw_bind_parameter(2, row.area_code.as_str())?;
-    stmt.raw_bind_parameter(3, row.displaced_threshold_distance)?;
-    stmt.raw_bind_parameter(4, row.icao_code.as_str())?;
-    stmt.raw_bind_parameter(5, row.landing_threshold_elevation)?;
+fn bind_runway_row(stmt: &mut rusqlite::Statement<'_>, row: &RunwayInsertRow) -> rusqlite::Result<()> {
+    stmt.raw_bind_parameter(1, row.area_code.as_str())?;
+    stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
+    stmt.raw_bind_parameter(3, row.airport_identifier.as_str())?;
+    stmt.raw_bind_parameter(4, row.runway_identifier.as_str())?;
+    stmt.raw_bind_parameter(5, row.runway_latitude)?;
+    stmt.raw_bind_parameter(6, row.runway_longitude)?;
+    stmt.raw_bind_parameter(7, row.runway_gradient)?;
+    stmt.raw_bind_parameter(8, row.runway_magnetic_bearing)?;
+    stmt.raw_bind_parameter(9, row.runway_true_bearing)?;
+    stmt.raw_bind_parameter(10, row.landing_threshold_elevation)?;
+    stmt.raw_bind_parameter(11, row.displaced_threshold_distance)?;
+    stmt.raw_bind_parameter(12, row.threshold_crossing_height)?;
+    stmt.raw_bind_parameter(13, row.runway_length)?;
+    stmt.raw_bind_parameter(14, row.runway_width)?;
     match &row.llz_identifier {
-        Some(v) => stmt.raw_bind_parameter(6, v.as_str())?,
-        None => stmt.raw_bind_parameter(6, rusqlite::types::Null)?,
+        Some(v) => stmt.raw_bind_parameter(15, v.as_str())?,
+        None => stmt.raw_bind_parameter(15, rusqlite::types::Null)?,
     }
     match row.llz_mls_gls_category {
-        Some(v) => stmt.raw_bind_parameter(7, v)?,
-        None => stmt.raw_bind_parameter(7, rusqlite::types::Null)?,
+        Some(v) => stmt.raw_bind_parameter(16, v)?,
+        None => stmt.raw_bind_parameter(16, rusqlite::types::Null)?,
     }
-    stmt.raw_bind_parameter(8, row.part_time_lights.as_str())?;
-    stmt.raw_bind_parameter(9, row.runway_gradient)?;
-    stmt.raw_bind_parameter(10, row.runway_identifier.as_str())?;
-    stmt.raw_bind_parameter(11, row.runway_latitude)?;
-    stmt.raw_bind_parameter(12, row.runway_length)?;
-    stmt.raw_bind_parameter(13, row.runway_lights.as_str())?;
-    stmt.raw_bind_parameter(14, row.runway_longitude)?;
-    stmt.raw_bind_parameter(15, row.runway_magnetic_bearing)?;
-    stmt.raw_bind_parameter(16, row.runway_true_bearing)?;
-    stmt.raw_bind_parameter(17, row.runway_width)?;
-    stmt.raw_bind_parameter(18, row.surface_code.as_str())?;
-    stmt.raw_bind_parameter(19, row.threshold_crossing_height)?;
-    match row.traffic_pattern_altitude {
-        Some(v) => stmt.raw_bind_parameter(20, v)?,
-        None => stmt.raw_bind_parameter(20, rusqlite::types::Null)?,
-    }
-    match &row.traffic_pattern {
-        Some(v) => stmt.raw_bind_parameter(21, v.as_str())?,
-        None => stmt.raw_bind_parameter(21, rusqlite::types::Null)?,
-    }
+    stmt.raw_bind_parameter(17, row.surface_code.as_str())?;
+    stmt.raw_bind_parameter(18, row.id.as_str())?;
     stmt.raw_execute()?;
     Ok(())
 }
 
-fn insert_rows(conn: &RustSqliteConnection, rows: &[RunwayInsertRow]) -> Result<()> {
+fn insert_rows(
+    conn: &RustSqliteConnection,
+    rows: &[RunwayInsertRow],
+) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let sql = "INSERT OR IGNORE INTO tbl_pg_runways VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let sql = build_insert_sql();
     conn.with_connection_native(|raw_conn| {
         let batch = 500;
         for start in (0..rows.len()).step_by(batch) {
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(sql)?;
+                let mut stmt = tx.prepare(&sql)?;
                 for row in &rows[start..end] {
                     bind_runway_row(&mut stmt, row)?;
                 }
@@ -614,11 +609,11 @@ pub(crate) fn process_runways_to_db(
     let ils_map =
         load_ils_map(nd_db_path).map_err(|err| anyhow!("load_ils_map failed: {}", err))?;
 
-    conn.execute_statement_native("\n    DELETE FROM tbl_pg_runways WHERE airport_identifier IN ('ZL02', 'ZL03', 'ZW01', 'ZW02');\n    ", &[])
+    conn.execute_statement_native("\n    DELETE FROM tbl_runways WHERE airport_identifier IN ('ZL02', 'ZL03', 'ZW01', 'ZW02');\n    ", &[])
         .map_err(sqlite_error)?;
-    conn.execute_statement_native("\n    DELETE FROM tbl_pa_airports WHERE airport_identifier IN ('ZL02', 'ZL03', 'ZW01', 'ZW02');\n    ", &[])
+    conn.execute_statement_native("\n    DELETE FROM tbl_airports WHERE airport_identifier IN ('ZL02', 'ZL03', 'ZW01', 'ZW02');\n    ", &[])
         .map_err(sqlite_error)?;
-    conn.execute_statement_native("\n    CREATE TABLE IF NOT EXISTS tbl_pg_runways (\n        airport_identifier TEXT,\n        area_code TEXT,\n        displaced_threshold_distance INTEGER,\n        icao_code TEXT,\n        landing_threshold_elevation INTEGER,\n        llz_identifier TEXT,\n        llz_mls_gls_category TEXT,\n        part_time_lights TEXT,\n        runway_gradient REAL,\n        runway_identifier TEXT,\n        runway_latitude REAL,\n        runway_length INTEGER,\n        runway_lights TEXT,\n        runway_longitude REAL,\n        runway_magnetic_bearing REAL,\n        runway_true_bearing REAL,\n        runway_width INTEGER,\n        surface_code TEXT,\n        threshold_crossing_height INTEGER,\n        traffic_pattern_altitude REAL,\n        traffic_pattern TEXT\n    );\n    ", &[])
+    conn.execute_statement_native("\n    CREATE TABLE IF NOT EXISTS tbl_runways (\n        area_code TEXT(3),\n        icao_code TEXT(2),\n        airport_identifier TEXT(4) NOT NULL,\n        runway_identifier TEXT(3) NOT NULL,\n        runway_latitude DOUBLE(9),\n        runway_longitude DOUBLE(10),\n        runway_gradient DOUBLE(5),\n        runway_magnetic_bearing DOUBLE(6),\n        runway_true_bearing DOUBLE(7),\n        landing_threshold_elevation INTEGER(5),\n        displaced_threshold_distance INTEGER(4),\n        threshold_crossing_height INTEGER(2),\n        runway_length INTEGER(5),\n        runway_width INTEGER(3),\n        llz_identifier TEXT(4),\n        llz_mls_gls_category TEXT(1),\n        surface_code INTEGER(3),\n        id TEXT(15)\n    );\n    ", &[])
         .map_err(sqlite_error)?;
 
     let mut existing_runways = fetch_existing_runways(conn)

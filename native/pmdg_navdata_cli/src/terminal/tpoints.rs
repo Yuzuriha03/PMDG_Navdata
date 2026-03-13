@@ -1,13 +1,9 @@
 use crate::core::db::{
-    get_shared_connection, join_quoted_sqlite_identifiers, open_sqlite_connection,
-    quote_sqlite_identifier, RustSqliteConnection,
+    get_shared_connection, open_sqlite_connection, RustSqliteConnection,
 };
 use crate::core::parsers::parse_terminal_waypoints_file;
-use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use anyhow::{anyhow, Result};
-use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
-use rusqlite::Statement;
 use std::collections::{HashMap, HashSet};
 
 const SQLITE_MAX_VARIABLE_NUMBER: usize = 999;
@@ -15,9 +11,6 @@ const PAIR_QUERY_PARAMETER_COUNT: usize = 2;
 
 struct TerminalWaypointRecord {
     area_code: String,
-    continent: String,
-    country: String,
-    datum_code: String,
     icao_code: String,
     region_code: String,
     waypoint_identifier: String,
@@ -41,9 +34,6 @@ impl TerminalWaypointRecord {
         let id = format!("{}{}{}", region_code, icao_code, waypoint_identifier);
         Self {
             area_code: "EEU".to_string(),
-            continent: "ASIA".to_string(),
-            country: "CHINA".to_string(),
-            datum_code: "WGE".to_string(),
             icao_code,
             region_code,
             waypoint_identifier,
@@ -77,7 +67,7 @@ fn fetch_existing_pairs(
         let placeholders = vec!["(?,?)"; batch.len()].join(",");
         let query = format!(
             "SELECT region_code, waypoint_identifier FROM {} WHERE (region_code, waypoint_identifier) IN ({})",
-            quote_sqlite_identifier(table_name),
+            table_name,
             placeholders
         );
         let params = batch
@@ -107,69 +97,31 @@ fn ensure_terminal_waypoints_index_native(
     conn: &RustSqliteConnection,
     table_name: &str,
 ) -> Result<()> {
-    let index_name = format!("idx_{}_region_identifier", table_name);
     let sql = format!(
-        "CREATE INDEX IF NOT EXISTS {} ON {}(region_code, waypoint_identifier)",
-        quote_sqlite_identifier(&index_name),
-        quote_sqlite_identifier(table_name)
+        "CREATE INDEX IF NOT EXISTS idx_{}_region_identifier ON {}(region_code, waypoint_identifier)",
+        table_name, table_name
     );
     conn.execute_statement_native(&sql, &[])?;
     Ok(())
 }
 
-fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
-    let placeholders = vec!["?"; columns.len()].join(", ");
-    format!(
-        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-        quote_sqlite_identifier(table_name),
-        join_quoted_sqlite_identifiers(columns),
-        placeholders,
-    )
+fn build_insert_sql(table_name: &str) -> Result<String> {
+    if table_name != "tbl_terminal_waypoints" {
+        return Err(anyhow!("unsupported terminal waypoint table: {}", table_name));
+    }
+    Ok("INSERT OR IGNORE INTO tbl_terminal_waypoints (area_code, region_code, icao_code, waypoint_identifier, waypoint_name, waypoint_type, waypoint_latitude, waypoint_longitude, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string())
 }
 
-fn bind_row_for_columns(
-    stmt: &mut Statement<'_>,
-    record: &TerminalWaypointRecord,
-    magnetic_variation: Option<f64>,
-    columns: &[String],
-) -> rusqlite::Result<()> {
-    for (index, column) in columns.iter().enumerate() {
-        let parameter_index = index + 1;
-        match column.as_str() {
-            "area_code" => stmt.raw_bind_parameter(parameter_index, record.area_code.as_str())?,
-            "continent" => stmt.raw_bind_parameter(parameter_index, record.continent.as_str())?,
-            "country" => stmt.raw_bind_parameter(parameter_index, record.country.as_str())?,
-            "datum_code" => stmt.raw_bind_parameter(parameter_index, record.datum_code.as_str())?,
-            "icao_code" => stmt.raw_bind_parameter(parameter_index, record.icao_code.as_str())?,
-            "magnetic_variation" => {
-                if let Some(value) = magnetic_variation {
-                    stmt.raw_bind_parameter(parameter_index, value)?
-                } else {
-                    stmt.raw_bind_parameter(parameter_index, Null)?
-                }
-            }
-            "region_code" => {
-                stmt.raw_bind_parameter(parameter_index, record.region_code.as_str())?
-            }
-            "waypoint_identifier" => {
-                stmt.raw_bind_parameter(parameter_index, record.waypoint_identifier.as_str())?
-            }
-            "waypoint_latitude" => {
-                stmt.raw_bind_parameter(parameter_index, record.waypoint_latitude)?
-            }
-            "waypoint_longitude" => {
-                stmt.raw_bind_parameter(parameter_index, record.waypoint_longitude)?
-            }
-            "waypoint_name" => {
-                stmt.raw_bind_parameter(parameter_index, record.waypoint_name.as_str())?
-            }
-            "waypoint_type" => {
-                stmt.raw_bind_parameter(parameter_index, record.waypoint_type.as_str())?
-            }
-            "id" => stmt.raw_bind_parameter(parameter_index, record.id.as_str())?,
-            _ => stmt.raw_bind_parameter(parameter_index, Null)?,
-        }
-    }
+fn bind_row(stmt: &mut rusqlite::Statement<'_>, record: &TerminalWaypointRecord) -> rusqlite::Result<()> {
+    stmt.raw_bind_parameter(1, record.area_code.as_str())?;
+    stmt.raw_bind_parameter(2, record.region_code.as_str())?;
+    stmt.raw_bind_parameter(3, record.icao_code.as_str())?;
+    stmt.raw_bind_parameter(4, record.waypoint_identifier.as_str())?;
+    stmt.raw_bind_parameter(5, record.waypoint_name.as_str())?;
+    stmt.raw_bind_parameter(6, record.waypoint_type.as_str())?;
+    stmt.raw_bind_parameter(7, record.waypoint_latitude)?;
+    stmt.raw_bind_parameter(8, record.waypoint_longitude)?;
+    stmt.raw_bind_parameter(9, record.id.as_str())?;
 
     stmt.raw_execute()?;
     Ok(())
@@ -178,19 +130,14 @@ fn bind_row_for_columns(
 fn insert_projected_rows(
     conn: &RustSqliteConnection,
     table_name: &str,
-    columns: &[String],
     records: &[TerminalWaypointRecord],
-    magnetic_variations: Option<&[f64]>,
     batch_size: usize,
 ) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
-    if magnetic_variations.is_some_and(|values| records.len() != values.len()) {
-        return Err(anyhow!("records and declinations length mismatch"));
-    }
 
-    let query = build_insert_sql(table_name, columns);
+    let query = build_insert_sql(table_name)?;
     let actual_batch_size = batch_size.max(1);
 
     conn.with_connection_native(|raw_conn| {
@@ -200,12 +147,7 @@ fn insert_projected_rows(
             {
                 let mut stmt = tx.prepare(query.as_str())?;
                 for idx in start..end {
-                    bind_row_for_columns(
-                        &mut stmt,
-                        &records[idx],
-                        magnetic_variations.map(|values| values[idx]),
-                        columns,
-                    )?;
+                    bind_row(&mut stmt, &records[idx])?;
                 }
             }
             tx.commit()?;
@@ -286,24 +228,7 @@ fn convert_terminal_waypoints_file_to_db(
         return Ok((parsed_count, 0));
     }
 
-    let columns = conn.get_table_columns_native(table_name)?;
-    let magnetic_variations = if columns.iter().any(|column| column == "magnetic_variation") {
-        let coords = new_records
-            .iter()
-            .map(|record| (record.waypoint_latitude, record.waypoint_longitude))
-            .collect::<Vec<_>>();
-        Some(batch_get_magnetic_variations_internal(&coords)?)
-    } else {
-        None
-    };
-    insert_projected_rows(
-        conn,
-        table_name,
-        &columns,
-        &new_records,
-        magnetic_variations.as_deref(),
-        insert_batch_size,
-    )?;
+    insert_projected_rows(conn, table_name, &new_records, insert_batch_size)?;
 
     Ok((parsed_count, new_count))
 }
@@ -364,14 +289,7 @@ mod tests {
             31.1,
             121.2,
         );
-        let columns = vec![
-            "region_code".to_string(),
-            "waypoint_identifier".to_string(),
-            "waypoint_latitude".to_string(),
-            "waypoint_longitude".to_string(),
-            "magnetic_variation".to_string(),
-        ];
-        let query = build_insert_sql("test_terminal_waypoints", &columns);
+        let query = "INSERT INTO test_terminal_waypoints (region_code, waypoint_identifier, waypoint_latitude, waypoint_longitude) VALUES (?, ?, ?, ?)";
 
         let conn = Connection::open_in_memory().unwrap();
         conn.execute(
@@ -383,13 +301,17 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         {
             let mut stmt = tx.prepare(&query).unwrap();
-            bind_row_for_columns(&mut stmt, &row, Some(3.5), &columns).unwrap();
+            stmt.raw_bind_parameter(1, row.region_code.as_str()).unwrap();
+            stmt.raw_bind_parameter(2, row.waypoint_identifier.as_str()).unwrap();
+            stmt.raw_bind_parameter(3, row.waypoint_latitude).unwrap();
+            stmt.raw_bind_parameter(4, row.waypoint_longitude).unwrap();
+            stmt.raw_execute().unwrap();
         }
         tx.commit().unwrap();
 
         let inserted = conn
             .query_row(
-                "SELECT region_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, magnetic_variation FROM test_terminal_waypoints",
+                "SELECT region_code, waypoint_identifier, waypoint_latitude, waypoint_longitude FROM test_terminal_waypoints",
                 [],
                 |row| {
                     Ok((
@@ -397,7 +319,6 @@ mod tests {
                         row.get::<_, String>(1)?,
                         row.get::<_, f64>(2)?,
                         row.get::<_, f64>(3)?,
-                        row.get::<_, f64>(4)?,
                     ))
                 },
             )
@@ -406,7 +327,6 @@ mod tests {
         assert_eq!(inserted.1, "FIX01");
         assert!((inserted.2 - 31.1).abs() < f64::EPSILON);
         assert!((inserted.3 - 121.2).abs() < f64::EPSILON);
-        assert!((inserted.4 - 3.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -420,15 +340,9 @@ mod tests {
             39.49556389,
             -84.30007778,
         );
-        let columns = vec![
-            "region_code".to_string(),
-            "icao_code".to_string(),
-            "waypoint_identifier".to_string(),
-            "id".to_string(),
-        ];
-        let query = build_insert_sql("test_terminal_waypoints_new", &columns);
+        let query = "INSERT INTO test_terminal_waypoints_new (region_code, icao_code, waypoint_identifier, id) VALUES (?, ?, ?, ?)";
 
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE test_terminal_waypoints_new (region_code TEXT, icao_code TEXT, waypoint_identifier TEXT, id TEXT)",
             [],
@@ -438,7 +352,11 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         {
             let mut stmt = tx.prepare(&query).unwrap();
-            bind_row_for_columns(&mut stmt, &row, None, &columns).unwrap();
+            stmt.raw_bind_parameter(1, row.region_code.as_str()).unwrap();
+            stmt.raw_bind_parameter(2, row.icao_code.as_str()).unwrap();
+            stmt.raw_bind_parameter(3, row.waypoint_identifier.as_str()).unwrap();
+            stmt.raw_bind_parameter(4, row.id.as_str()).unwrap();
+            stmt.raw_execute().unwrap();
         }
         tx.commit().unwrap();
 

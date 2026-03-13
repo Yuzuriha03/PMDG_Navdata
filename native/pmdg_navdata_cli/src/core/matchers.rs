@@ -332,9 +332,9 @@ fn append_rows_4_airport_native(
 fn append_rows_scoped_native(
     conn: &RustSqliteConnection,
     table_name: &str,
-    identifier_column: &str,
-    latitude_column: &str,
-    longitude_column: &str,
+    _identifier_column: &str,
+    _latitude_column: &str,
+    _longitude_column: &str,
     region_column: Option<&str>,
     airport_column: Option<&str>,
     by_identifier: &mut HashMap<String, Vec<RefCandidate>>,
@@ -350,19 +350,37 @@ fn append_rows_scoped_native(
         .map(|identifier| identifier.as_ref())
         .collect::<Vec<_>>();
 
+    let select_prefix = match (table_name, region_column.is_some(), airport_column.is_some()) {
+        ("tbl_enroute_ndbnavaids", false, false) => {
+            "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({})"
+        }
+        ("tbl_vhfnavaids", false, false) => {
+            "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({})"
+        }
+        ("tbl_terminal_ndbnavaids", false, true) => {
+            "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids WHERE ndb_identifier IN ({})"
+        }
+        ("tbl_enroute_waypoints", false, false) => {
+            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({})"
+        }
+        ("tbl_terminal_waypoints", true, false) => {
+            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints WHERE waypoint_identifier IN ({})"
+        }
+        ("tbl_runways", false, true) => {
+            "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways WHERE runway_identifier IN ({})"
+        }
+        ("tbl_localizers_glideslopes", false, true) => {
+            "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes WHERE llz_identifier IN ({})"
+        }
+        ("tbl_gls", false, true) => {
+            "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls WHERE gls_ref_path_identifier IN ({})"
+        }
+        _ => return Ok(()),
+    };
+
     for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
         let placeholders = vec!["?"; chunk.len()].join(", ");
-        let mut selected_columns = vec![identifier_column, latitude_column, longitude_column];
-        if let Some(region_column) = region_column {
-            selected_columns.push(region_column);
-        }
-        if let Some(airport_column) = airport_column {
-            selected_columns.push(airport_column);
-        }
-        let sql = format!(
-            "SELECT {} FROM {table_name} WHERE {identifier_column} IN ({placeholders})",
-            selected_columns.join(", ")
-        );
+        let sql = select_prefix.replace("{}", &placeholders);
         let params = chunk
             .iter()
             .map(|identifier| rusqlite::types::Value::Text((*identifier).to_string()))
@@ -416,9 +434,9 @@ fn load_scoped_candidates_native(
     db_path: &str,
     timeout: u32,
     table_name: &'static str,
-    identifier_column: &'static str,
-    latitude_column: &'static str,
-    longitude_column: &'static str,
+    _identifier_column: &'static str,
+    _latitude_column: &'static str,
+    _longitude_column: &'static str,
     region_column: Option<&'static str>,
     airport_column: Option<&'static str>,
     ref_table: &'static str,
@@ -427,23 +445,40 @@ fn load_scoped_candidates_native(
     let conn = open_sqlite_readonly_connection(db_path, timeout)?;
     let mut rows = Vec::new();
     if !required_identifiers.is_empty() {
+        let select_prefix = match (table_name, region_column.is_some(), airport_column.is_some()) {
+            ("tbl_enroute_ndbnavaids", false, false) => {
+                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({})"
+            }
+            ("tbl_vhfnavaids", false, false) => {
+                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({})"
+            }
+            ("tbl_terminal_ndbnavaids", false, true) => {
+                "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids WHERE ndb_identifier IN ({})"
+            }
+            ("tbl_enroute_waypoints", false, false) => {
+                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({})"
+            }
+            ("tbl_terminal_waypoints", true, false) => {
+                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints WHERE waypoint_identifier IN ({})"
+            }
+            ("tbl_runways", false, true) => {
+                "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways WHERE runway_identifier IN ({})"
+            }
+            ("tbl_localizers_glideslopes", false, true) => {
+                "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes WHERE llz_identifier IN ({})"
+            }
+            ("tbl_gls", false, true) => {
+                "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls WHERE gls_ref_path_identifier IN ({})"
+            }
+            _ => return Ok(rows),
+        };
         let identifiers = required_identifiers
             .iter()
             .map(|identifier| identifier.as_ref())
             .collect::<Vec<_>>();
         for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
-            let mut selected_columns = vec![identifier_column, latitude_column, longitude_column];
-            if let Some(region_column) = region_column {
-                selected_columns.push(region_column);
-            }
-            if let Some(airport_column) = airport_column {
-                selected_columns.push(airport_column);
-            }
-            let sql = format!(
-                "SELECT {} FROM {table_name} WHERE {identifier_column} IN ({placeholders})",
-                selected_columns.join(", ")
-            );
+            let sql = select_prefix.replace("{}", &placeholders);
             let params = chunk
                 .iter()
                 .map(|identifier| rusqlite::types::Value::Text((*identifier).to_string()))

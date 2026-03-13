@@ -1,8 +1,8 @@
 use crate::core::parsers::{for_each_cifp_line, CifpFields};
 use crate::core::{
     db::{
-        ensure_nav_id_indexes, get_shared_connection, join_quoted_sqlite_identifiers,
-        open_sqlite_connection, quote_sqlite_identifier, RustSqliteConnection,
+        ensure_nav_id_indexes, get_shared_connection, open_sqlite_connection,
+        RustSqliteConnection,
     },
     matchers::{
         get_shared_coordinate_cache, get_shared_ref_matcher, CoordinateLookupRequest,
@@ -379,11 +379,13 @@ fn convert_vertical_angle(value: &str) -> Option<f64> {
     Some((parsed * 10.0).round() / 10.0)
 }
 
-fn type_check(waypoint: Option<&str>) -> bool {
+fn type_check(waypoint: Option<&str>, icao_code: Option<&str>) -> bool {
     match waypoint {
         Some(value) => {
             let trimmed = value.trim();
-            trimmed.len() == 4 && trimmed.starts_with('Z')
+            trimmed.len() == 4
+                && trimmed.starts_with('Z')
+                && !matches!(icao_code.map(str::trim), Some("ZZ"))
         }
         None => false,
     }
@@ -460,14 +462,60 @@ fn collect_terminal_required_identifiers(
     Ok(Arc::new(identifiers))
 }
 
-fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
-    let placeholders = vec!["?"; columns.len()].join(", ");
-    format!(
-        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
-        quote_sqlite_identifier(table_name),
-        join_quoted_sqlite_identifiers(columns),
-        placeholders,
-    )
+fn build_insert_sql(table_name: &str) -> Result<String> {
+    let sql = match table_name {
+        "tbl_sids" => "INSERT OR IGNORE INTO tbl_sids (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "tbl_stars" => "INSERT OR IGNORE INTO tbl_stars (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "tbl_iaps" => "INSERT OR IGNORE INTO tbl_iaps (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        _ => return Err(anyhow!("unsupported procedure table: {}", table_name)),
+    };
+    Ok(sql.to_string())
+}
+
+fn procedure_columns(table_name: &str) -> Result<Vec<String>> {
+    let columns = match table_name {
+        "tbl_sids" | "tbl_stars" | "tbl_iaps" => vec![
+            "area_code",
+            "airport_identifier",
+            "procedure_identifier",
+            "route_type",
+            "transition_identifier",
+            "seqno",
+            "waypoint_icao_code",
+            "waypoint_identifier",
+            "waypoint_latitude",
+            "waypoint_longitude",
+            "waypoint_description_code",
+            "turn_direction",
+            "rnp",
+            "path_termination",
+            "recommanded_navaid",
+            "recommanded_navaid_latitude",
+            "recommanded_navaid_longitude",
+            "arc_radius",
+            "theta",
+            "rho",
+            "magnetic_course",
+            "route_distance_holding_distance_time",
+            "distance_time",
+            "altitude_description",
+            "altitude1",
+            "altitude2",
+            "transition_altitude",
+            "speed_limit_description",
+            "speed_limit",
+            "vertical_angle",
+            "center_waypoint",
+            "center_waypoint_latitude",
+            "center_waypoint_longitude",
+            "aircraft_category",
+            "id",
+            "recommanded_id",
+            "center_id",
+        ],
+        _ => return Err(anyhow!("unsupported procedure table: {}", table_name)),
+    };
+    Ok(columns.into_iter().map(str::to_string).collect())
 }
 
 fn load_existing_proc_map_from_conn(
@@ -484,7 +532,7 @@ fn load_existing_proc_map_from_conn(
         let placeholders = vec!["?"; chunk.len()].join(", ");
         let query = format!(
             "SELECT airport_identifier, procedure_identifier FROM {} WHERE airport_identifier IN ({})",
-            quote_sqlite_identifier(table_name),
+            table_name,
             placeholders,
         );
         let params = chunk
@@ -499,10 +547,6 @@ fn load_existing_proc_map_from_conn(
         })?;
     }
     Ok(out)
-}
-
-fn fallback_coord_cell(value: Option<f64>) -> CellValue {
-    value.map(CellValue::Float).unwrap_or(CellValue::None)
 }
 
 fn build_reference_id_cell(
@@ -566,21 +610,8 @@ fn matched_row_to_cells(row: RefMatchResult) -> MatchCellTuple {
     )
 }
 
-fn resolve_match_row(
-    matched: MatchCellTuple,
-    fallback_lat: Option<f64>,
-    fallback_lon: Option<f64>,
-) -> MatchCellTuple {
-    let (ref_table, matched_lat, matched_lon) = matched;
-    let resolved_lat = match matched_lat {
-        CellValue::None => fallback_coord_cell(fallback_lat),
-        value => value,
-    };
-    let resolved_lon = match matched_lon {
-        CellValue::None => fallback_coord_cell(fallback_lon),
-        value => value,
-    };
-    (ref_table, resolved_lat, resolved_lon)
+fn resolve_match_row(matched: MatchCellTuple) -> MatchCellTuple {
+    matched
 }
 
 fn clone_match_cells(row: &MatchCellRow) -> MatchCellTuple {
@@ -607,7 +638,6 @@ fn match_ref_requests<'a, const N: usize>(
     let mut misses: [Option<RefMatchRequest<'a>>; N] = std::array::from_fn(|_| None);
     let mut miss_keys: [Option<MatchCacheKey>; N] = std::array::from_fn(|_| None);
     let mut miss_indices = [0usize; N];
-    let mut miss_fallbacks = [(None, None); N];
     let mut miss_count = 0usize;
 
     for (idx, request) in requests.into_iter().enumerate() {
@@ -622,7 +652,6 @@ fn match_ref_requests<'a, const N: usize>(
         } = request;
 
         miss_indices[miss_count] = idx;
-        miss_fallbacks[miss_count] = (request.latitude, request.longitude);
         miss_keys[miss_count] = Some(lookup_key.to_owned_key());
         misses[miss_count] = Some(request);
         miss_count += 1;
@@ -638,8 +667,6 @@ fn match_ref_requests<'a, const N: usize>(
                     .cloned()
                     .map(matched_row_to_cells)
                     .unwrap_or((CellValue::None, CellValue::None, CellValue::None)),
-                miss_fallbacks[output_index].0,
-                miss_fallbacks[output_index].1,
             ));
             match_cache.insert(miss_keys[output_index].take().unwrap(), Arc::clone(&row));
             results[matched_index] = Some(row);
@@ -702,7 +729,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             );
             let waypoint_latitude_raw = waypoint_coordinates.latitude;
             let waypoint_longitude_raw = waypoint_coordinates.longitude;
-            let waypoint_is_airport = type_check(waypoint_identifier);
+            let waypoint_is_airport = type_check(waypoint_identifier, waypoint_icao_code);
 
             let waypoint_description_code = extract_opt_field(&parts, 8);
             let turn_direction = extract_opt_field(&parts, 9);
@@ -730,7 +757,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             );
             let center_waypoint_lat_raw = center_waypoint_coordinates.latitude;
             let center_waypoint_lon_raw = center_waypoint_coordinates.longitude;
-            let center_is_airport = type_check(center_waypoint);
+            let center_is_airport = type_check(center_waypoint, center_waypoint_icao_code);
 
             let match_airport_id = Some(context.airport_identifier);
             let requests = [
@@ -1106,11 +1133,11 @@ fn convert_terminal_cifp_to_db(
     }
     let existing_proc_map =
         load_existing_proc_map_from_conn(conn, &config.table_name, &airport_identifiers)?;
-    let columns = conn.get_table_columns_native(&config.table_name)?;
+    let columns = procedure_columns(&config.table_name)?;
     let authorization_required_index = columns
         .iter()
         .position(|column| column == "authorization_required");
-    let query = build_insert_sql(&config.table_name, &columns);
+    let query = build_insert_sql(&config.table_name)?;
 
     let mut total_processed = 0usize;
     let batch_limit = config.batch_size.max(1);
@@ -1261,17 +1288,13 @@ mod tests {
     }
 
     #[test]
-    fn preserves_fallback_coordinates_when_ref_match_fails() {
+    fn keeps_missing_coordinates_empty_when_ref_match_fails() {
         let matched = (CellValue::None, CellValue::None, CellValue::None);
-        let resolved = resolve_match_row(matched, Some(35.92108056), Some(74.34223889));
+        let resolved = resolve_match_row(matched);
 
         assert_eq!(
             resolved,
-            (
-                CellValue::None,
-                CellValue::Float(35.92108056),
-                CellValue::Float(74.34223889),
-            )
+            (CellValue::None, CellValue::None, CellValue::None)
         );
     }
 
