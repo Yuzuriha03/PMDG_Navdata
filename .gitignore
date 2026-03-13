@@ -1,0 +1,93 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+.installed.cfg
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project Build & Distribution
+main.build/
+main.onefile-build/
+main.dist/
+main.exe
+.qodo/
+native/inibuilds_navdata_cli/target
+native/compare_databases/target
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Development/Comparison Tools
+detailed_compare.py
+check_prod_db_pragmas.py
+
+# Documentation (Development)
+OPTIMIZATION_CHECKLIST.md
+PERFORMANCE_OPTIMIZATION_REPORT.md
+
+# Backup
+/backup
+
+# Test Databases
+*.db
+*.db3
+*.s3db
+test_*.db
+memory_analysis.md
+native/inibuilds_navdata_cli/Cargo.lock
+
+# Local Runtime Config
+config.ini
+
+# Local Comparison Reports
+compare_report.txt
+
+# Local PowerShell launchers
+package_inibuilds_navdata_cli.ps1
+run_compare_databases.ps1
+

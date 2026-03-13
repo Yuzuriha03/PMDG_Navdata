@@ -1,0 +1,17 @@
+[package]
+name = "compare_databases"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "compare_databases"
+path = "main.rs"
+
+[features]
+default = ["sqlite-bundled"]
+sqlite-bundled = ["rusqlite/bundled"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+rusqlite = "0.38"
