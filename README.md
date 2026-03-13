@@ -24,7 +24,7 @@
 - **Realistic Flight Planning** — Create routes with up-to-date waypoints, airways, and navigational aids
 - **Accurate Navigation** — Fly with current frequencies, runways, SIDs, STARs, and approaches
 - **Cross-Version Support** — Works with both MSFS 2020 and MSFS 2024
-- **Native Rust CLI** — Ships as `inibuilds_navdata_cli.exe` for converting XP12 navigation data to Inibuilds format
+- **Native Rust CLI** — Ships as `pmdg_navdata_cli.exe` for converting XP12 navigation data to PMDG format
 - **Simple Installation** — Clear step-by-step instructions for updating your aircraft
 
 ## 🧭 Why Update Your NavData?
@@ -50,7 +50,7 @@ Real-world navigation data changes with every 28-day AIRAC cycle. Keeping your A
 | `iaps` | Instrument Approach Procedures (ILS, RNAV, VOR, etc.) |
 | `sids` | Standard Instrument Departures |
 | `stars` | Standard Terminal Arrival Routes |
-| `inibuilds_navdata_cli.exe` | Native Rust CLI for converting navdata to A340/A350 format |
+| `pmdg_navdata_cli.exe` | Native Rust CLI for converting navdata to PMDG format |
 
 ## ✈️ Supported Aircraft
 
@@ -69,27 +69,27 @@ You'll need a subscription from Navigraph:
 ### 2️⃣ Convert NDB Data
 
 - Download the packaged Rust CLI release
-- Rename `config.example.ini` to `config.ini`, place it next to `inibuilds_navdata_cli.exe`, and fill in your local paths
-- Run `inibuilds_navdata_cli.exe`
-- Optional: use `inibuilds_navdata_cli.exe --help` to inspect available flags such as `--config`, `--step`, `--timeout`, and `--skip-postprocess`
+- Rename `config.example.ini` to `config.ini`, place it next to `pmdg_navdata_cli.exe`, and fill in your local paths
+- Run `pmdg_navdata_cli.exe`
+- Optional: use `pmdg_navdata_cli.exe --help` to inspect available flags such as `--config`, `--step`, `--timeout`, and `--skip-postprocess`
 
 Common examples:
 
 ```powershell
 # Show all available arguments
-.\inibuilds_navdata_cli.exe --help
+.\pmdg_navdata_cli.exe --help
 
 # Use a specific config file path
-.\inibuilds_navdata_cli.exe --config .\config.ini
+.\pmdg_navdata_cli.exe --config .\config.ini
 
 # Run only one processing step
-.\inibuilds_navdata_cli.exe --step airports
+.\pmdg_navdata_cli.exe --step airports
 
 # Skip the final index-drop and VACUUM post-process stage
-.\inibuilds_navdata_cli.exe --skip-postprocess
+.\pmdg_navdata_cli.exe --skip-postprocess
 
 # Combine arguments
-.\inibuilds_navdata_cli.exe --config .\config.ini --step airways --timeout 60 --skip-postprocess
+.\pmdg_navdata_cli.exe --config .\config.ini --step airways --timeout 60 --skip-postprocess
 ```
 
 ### 3️⃣ Build From Source
@@ -101,14 +101,14 @@ If you want to compile the Rust CLI yourself:
 3. Build the CLI:
 
 ```powershell
-cd .\native\inibuilds_navdata_cli
-cargo build --release --bin inibuilds_navdata_cli
+cd .\native\pmdg_navdata_cli
+cargo build --release --bin pmdg_navdata_cli
 ```
 
 The compiled executable will be generated at:
 
 ```powershell
-.\native\inibuilds_navdata_cli\target\release\inibuilds_navdata_cli.exe
+.\native\pmdg_navdata_cli\target\release\pmdg_navdata_cli.exe
 ```
 
 To run the compiled executable manually, place `config.ini` next to it and start it from that directory.
@@ -171,7 +171,7 @@ Double-check that you're working in the correct NavigationData folder for your s
 
 <details>
 <summary><b>Converter Issues</b></summary>
-The `inibuilds_navdata_cli.exe` tool must be used with a valid `config.ini` placed next to the executable. Start from `config.example.ini`, then check the input/output paths carefully.
+The `pmdg_navdata_cli.exe` tool must be used with a valid `config.ini` placed next to the executable. Start from `config.example.ini`, then check the input/output paths carefully.
 </details>
 
 <details>

@@ -1,5 +1,5 @@
 [package]
-name = "inibuilds_navdata_cli"
+name = "pmdg_navdata_cli"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,7 @@ default = ["sqlite-bundled"]
 sqlite-bundled = ["rusqlite/bundled"]
 
 [[bin]]
-name = "inibuilds_navdata_cli"
+name = "pmdg_navdata_cli"
 path = "src/main.rs"
 
 [dependencies]

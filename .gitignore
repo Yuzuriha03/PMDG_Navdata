@@ -52,7 +52,7 @@ main.onefile-build/
 main.dist/
 main.exe
 .qodo/
-native/inibuilds_navdata_cli/target
+native/pmdg_navdata_cli/target
 native/compare_databases/target
 
 # Logs
@@ -79,7 +79,7 @@ PERFORMANCE_OPTIMIZATION_REPORT.md
 *.s3db
 test_*.db
 memory_analysis.md
-native/inibuilds_navdata_cli/Cargo.lock
+native/pmdg_navdata_cli/Cargo.lock
 
 # Local Runtime Config
 config.ini
@@ -88,6 +88,6 @@ config.ini
 compare_report.txt
 
 # Local PowerShell launchers
-package_inibuilds_navdata_cli.ps1
+package_pmdg_navdata_cli.ps1
 run_compare_databases.ps1
 

@@ -5,15 +5,15 @@ This folder contains the project's native implementation layers.
 
 ## Layout
 
-- `native/inibuilds_navdata_cli`: the Rust CLI that converts navdata into the Inibuilds output format.
+- `native/pmdg_navdata_cli`: the Rust CLI that converts navdata into the PMDG output format.
 - `native/compare_databases`: a standalone Rust tool for SQLite database diffs used during validation and regression checks.
-- `native/inibuilds_navdata_cli/src/core/magcof`: bundled World Magnetic Model coefficient data consumed by the Rust CLI.
+- `native/pmdg_navdata_cli/src/core/magcof`: bundled World Magnetic Model coefficient data consumed by the Rust CLI.
 
 ## Rust CLI
 
-- Crate path: `native/inibuilds_navdata_cli`
-- Crate name: `inibuilds_navdata_cli`
-- Binary name: `inibuilds_navdata_cli`
+- Crate path: `native/pmdg_navdata_cli`
+- Crate name: `pmdg_navdata_cli`
+- Binary name: `pmdg_navdata_cli`
 
 ## Database Compare Tool for Development
 
@@ -31,8 +31,8 @@ This folder contains the project's native implementation layers.
 ### Build
 
 ```powershell
-cd native/inibuilds_navdata_cli
-cargo build --release --bin inibuilds_navdata_cli
+cd native/pmdg_navdata_cli
+cargo build --release --bin pmdg_navdata_cli
 ```
 
 To build the database compare tool:

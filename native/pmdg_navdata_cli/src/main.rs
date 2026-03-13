@@ -160,8 +160,8 @@ const STEP_REGISTRY: &[StepDefinition] = &[
 ];
 
 #[derive(Parser, Debug)]
-#[command(name = "inibuilds_navdata_cli")]
-#[command(about = "Rust CLI for building Inibuilds navdata databases")]
+#[command(name = "pmdg_navdata_cli")]
+#[command(about = "Rust CLI for building PMDG navdata databases")]
 struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
