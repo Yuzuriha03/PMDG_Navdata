@@ -5,7 +5,7 @@
 [![MSFS 2024](https://img.shields.io/badge/MSFS%202024-Compatible-brightgreen.svg)](https://www.flightsimulator.com/) 
 [![PMDG B737 Series](https://img.shields.io/badge/PMDG-B737%20Series-orange.svg)](https://pmdg.com/) 
 [![PMDG B777 Series](https://img.shields.io/badge/PMDG-B777%20Series-orange.svg)](https://pmdg.com/) 
-[![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](LICENSE)
 
 > Keep your PMDG B737 & B777 Series equipped with the latest navigation data for Microsoft Flight Simulator 2020 & 2024
 
