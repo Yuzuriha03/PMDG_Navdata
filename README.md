@@ -1,13 +1,13 @@
-# ✈️ Inibuilds NavData
+# ✈️ PMDG NavData
 
 [![Navigraph](https://img.shields.io/badge/Navigraph-Compatible-blue.svg)](https://navigraph.com/) 
 [![MSFS 2020](https://img.shields.io/badge/MSFS%202020-Compatible-brightgreen.svg)](https://www.flightsimulator.com/) 
 [![MSFS 2024](https://img.shields.io/badge/MSFS%202024-Compatible-brightgreen.svg)](https://www.flightsimulator.com/) 
-[![iniBuilds A340](https://img.shields.io/badge/iniBuilds-A340-orange.svg)](https://www.inibuilds.com/) 
-[![iniBuilds A350](https://img.shields.io/badge/iniBuilds-A350-orange.svg)](https://www.inibuilds.com/) 
+[![PMDG B737 Series](https://img.shields.io/badge/PMDG-B737%20Series-orange.svg)](https://pmdg.com/) 
+[![PMDG B777 Series](https://img.shields.io/badge/PMDG-B777%20Series-orange.svg)](https://pmdg.com/) 
 [![License: MIT](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
-> Keep your Inibuilds Airbus A340/A350 equipped with the latest navigation data for Microsoft Flight Simulator 2020 & 2024
+> Keep your PMDG B737 & B777 Series equipped with the latest navigation data for Microsoft Flight Simulator 2020 & 2024
 
 ## 📑 Table of Contents
 
@@ -29,7 +29,7 @@
 
 ## 🧭 Why Update Your NavData?
 
-Real-world navigation data changes with every 28-day AIRAC cycle. Keeping your A340/A350's navigation database current ensures:
+Real-world navigation data changes with every 28-day AIRAC cycle. Keeping your PMDG B737 & B777 Series navigation database current ensures:
 
 - **Accuracy** — Avoid invalid routes, outdated procedures, and unrealistic experiences
 - **Realism** — Fly with the same data professional pilots use in real-world operations
@@ -54,10 +54,8 @@ Real-world navigation data changes with every 28-day AIRAC cycle. Keeping your A
 
 ## ✈️ Supported Aircraft
 
-- Inibuilds Airbus A340-300
-- Inibuilds Airbus A350-900
-- Inibuilds Airbus A350-900ULR
-- Inibuilds Airbus A350-1000
+- PMDG B737 Series
+- PMDG B777 Series
 
 ## 📥 Installation Guide
 
@@ -117,26 +115,26 @@ To run the compiled executable manually, place `config.ini` next to it and start
 
 > ⚠️ **CRITICAL STEP!** Delete the contents of the NavigationData folder (not the folder itself)
 
-Find your appropriate path (*** refers to a340 or a350):
+Find your appropriate path (*** refers to 736/737/738/739/77er/77l/77f/77w):
 
 **MSFS 2020 (Microsoft Store)**
 ```
-%LocalAppdata%\Packages\Microsoft.FlightSimulator_8wekyb3d8bbwe\LocalState\packages\inibuilds-aircraft-***\work\NavigationData
+%LocalAppdata%\Packages\Microsoft.FlightSimulator_8wekyb3d8bbwe\LocalState\packages\pmdg-aircraft-***\work\NavigationData
 ```
 
 **MSFS 2020 (Steam)**
 ```
-%APPDATA%\Microsoft Flight Simulator\Packages\inibuilds-aircraft-***\work\NavigationData
+%APPDATA%\Microsoft Flight Simulator\Packages\pmdg-aircraft-***\work\NavigationData
 ```
 
 **MSFS 2024 (Microsoft Store)**
 ```
-%LocalAppdata%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalState\WASM\MSFS2024\inibuilds-aircraft-***\work\NavigationData
+%LocalAppdata%\Packages\Microsoft.Limitless_8wekyb3d8bbwe\LocalState\WASM\MSFS2024\pmdg-aircraft-***\work\NavigationData
 ```
 
 **MSFS 2024 (Steam)**
 ```
-%APPDATA%\Microsoft Flight Simulator 2024\WASM\MSFS2024\inibuilds-aircraft-***\work\NavigationData
+%APPDATA%\Microsoft Flight Simulator 2024\WASM\MSFS2024\pmdg-aircraft-***\work\NavigationData
 ```
 
 ### 5️⃣ Install New NavData
@@ -146,7 +144,7 @@ Find your appropriate path (*** refers to a340 or a350):
 ### 6️⃣ Restart MSFS
 
 - Launch (or restart) Microsoft Flight Simulator
-- Your A340/A350 will now use the updated navigation data
+- Your PMDG B737/B777 Series aircraft will now use the updated navigation data
 
 ## 🔧 Troubleshooting
 
@@ -181,6 +179,6 @@ If specific procedures or waypoints are missing, your navigation data might be i
 
 ## ⚠️ Disclaimer
 
-This repository is not officially affiliated with Inibuilds & Navigraph. Use this information and the provided tools at your own risk. Always back up your data before making changes.
+This repository is not officially affiliated with PMDG & Navigraph. Use this information and the provided tools at your own risk. Always back up your data before making changes.
 
 **Happy Flying!** 🛫
