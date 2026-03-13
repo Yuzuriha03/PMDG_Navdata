@@ -1,16 +1,19 @@
-use crate::core::db::RustSqliteConnection;
+use crate::core::db::{join_quoted_sqlite_identifiers, quote_sqlite_identifier, RustSqliteConnection};
 use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use crate::core::parsers::parse_vhf_nav_file;
 use anyhow::{anyhow, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
 use encoding_rs::Encoding;
 use pinyin::ToPinyin;
+use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
+use rusqlite::Statement;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 
 const SQLITE_MAX_VARIABLE_NUMBER: usize = 999;
+const VHFS_TABLE: &str = "tbl_vhfnavaids";
 
 #[derive(Clone)]
 struct VhfInsertRow {
@@ -25,7 +28,6 @@ struct VhfInsertRow {
     dme_longitude: f64,
     icao_code: String,
     ilsdme_bias: Option<String>,
-    magnetic_variation: f64,
     navaid_class: String,
     navaid_frequency: f64,
     navaid_identifier: String,
@@ -34,6 +36,24 @@ struct VhfInsertRow {
     navaid_name: String,
     range: String,
     station_declination: Option<i64>,
+    id: String,
+}
+
+fn area_code_for_icao(icao_code: &str) -> &'static str {
+    match icao_code {
+        "VH" => "PAC",
+        _ => "EEU",
+    }
+}
+
+fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
+    let placeholders = vec!["?"; columns.len()].join(", ");
+    format!(
+        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
+        quote_sqlite_identifier(table_name),
+        join_quoted_sqlite_identifiers(columns),
+        placeholders,
+    )
 }
 
 fn python_round(value: f64) -> i64 {
@@ -139,6 +159,7 @@ fn load_navaid_mapping_from_csv(
 
 fn fetch_existing_pairs_for_keys(
     conn: &RustSqliteConnection,
+    table_name: &str,
     keys: &[(String, String)],
     batch_size: usize,
 ) -> Result<HashSet<(String, String)>> {
@@ -153,7 +174,8 @@ fn fetch_existing_pairs_for_keys(
     for chunk in keys.chunks(effective_batch) {
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
-            "SELECT navaid_identifier, icao_code FROM tbl_d_vhfnavaids WHERE (navaid_identifier, icao_code) IN ({})",
+            "SELECT vor_identifier, icao_code FROM {} WHERE (vor_identifier, icao_code) IN ({})",
+            quote_sqlite_identifier(table_name),
             placeholders
         );
         let params = chunk
@@ -177,58 +199,90 @@ fn fetch_existing_pairs_for_keys(
     Ok(pairs)
 }
 
-fn bind_vhf_row(stmt: &mut rusqlite::Statement<'_>, row: &VhfInsertRow) -> rusqlite::Result<()> {
-    match &row.airport_identifier {
-        Some(v) => stmt.raw_bind_parameter(1, v.as_str())?,
-        None => stmt.raw_bind_parameter(1, rusqlite::types::Null)?,
-    }
-    stmt.raw_bind_parameter(2, row.area_code.as_str())?;
-    stmt.raw_bind_parameter(3, row.continent.as_str())?;
-    stmt.raw_bind_parameter(4, row.country.as_str())?;
-    stmt.raw_bind_parameter(5, row.datum_code.as_str())?;
-    stmt.raw_bind_parameter(6, row.dme_elevation)?;
-    match &row.dme_ident {
-        Some(v) => stmt.raw_bind_parameter(7, v.as_str())?,
-        None => stmt.raw_bind_parameter(7, rusqlite::types::Null)?,
-    }
-    stmt.raw_bind_parameter(8, row.dme_latitude)?;
-    stmt.raw_bind_parameter(9, row.dme_longitude)?;
-    stmt.raw_bind_parameter(10, row.icao_code.as_str())?;
-    match &row.ilsdme_bias {
-        Some(v) => stmt.raw_bind_parameter(11, v.as_str())?,
-        None => stmt.raw_bind_parameter(11, rusqlite::types::Null)?,
-    }
-    stmt.raw_bind_parameter(12, row.magnetic_variation)?;
-    stmt.raw_bind_parameter(13, row.navaid_class.as_str())?;
-    stmt.raw_bind_parameter(14, row.navaid_frequency)?;
-    stmt.raw_bind_parameter(15, row.navaid_identifier.as_str())?;
-    stmt.raw_bind_parameter(16, row.navaid_latitude)?;
-    stmt.raw_bind_parameter(17, row.navaid_longitude)?;
-    stmt.raw_bind_parameter(18, row.navaid_name.as_str())?;
-    stmt.raw_bind_parameter(19, row.range.as_str())?;
-    match row.station_declination {
-        Some(v) => stmt.raw_bind_parameter(20, v)?,
-        None => stmt.raw_bind_parameter(20, rusqlite::types::Null)?,
+fn bind_vhf_row_for_columns(
+    stmt: &mut Statement<'_>,
+    row: &VhfInsertRow,
+    magnetic_variation: Option<f64>,
+    columns: &[String],
+) -> rusqlite::Result<()> {
+    for (index, column) in columns.iter().enumerate() {
+        let parameter_index = index + 1;
+        match column.as_str() {
+            "airport_identifier" => match &row.airport_identifier {
+                Some(v) => stmt.raw_bind_parameter(parameter_index, v.as_str())?,
+                None => stmt.raw_bind_parameter(parameter_index, Null)?,
+            },
+            "area_code" => stmt.raw_bind_parameter(parameter_index, row.area_code.as_str())?,
+            "continent" => stmt.raw_bind_parameter(parameter_index, row.continent.as_str())?,
+            "country" => stmt.raw_bind_parameter(parameter_index, row.country.as_str())?,
+            "datum_code" => stmt.raw_bind_parameter(parameter_index, row.datum_code.as_str())?,
+            "dme_elevation" => stmt.raw_bind_parameter(parameter_index, row.dme_elevation)?,
+            "dme_ident" => match &row.dme_ident {
+                Some(v) => stmt.raw_bind_parameter(parameter_index, v.as_str())?,
+                None => stmt.raw_bind_parameter(parameter_index, Null)?,
+            },
+            "dme_latitude" => stmt.raw_bind_parameter(parameter_index, row.dme_latitude)?,
+            "dme_longitude" => stmt.raw_bind_parameter(parameter_index, row.dme_longitude)?,
+            "icao_code" => stmt.raw_bind_parameter(parameter_index, row.icao_code.as_str())?,
+            "ilsdme_bias" => match &row.ilsdme_bias {
+                Some(v) => stmt.raw_bind_parameter(parameter_index, v.as_str())?,
+                None => stmt.raw_bind_parameter(parameter_index, Null)?,
+            },
+            "magnetic_variation" => {
+                if let Some(value) = magnetic_variation {
+                    stmt.raw_bind_parameter(parameter_index, value)?
+                } else {
+                    stmt.raw_bind_parameter(parameter_index, Null)?
+                }
+            }
+            "navaid_class" => stmt.raw_bind_parameter(parameter_index, row.navaid_class.as_str())?,
+            "vor_frequency" | "navaid_frequency" => stmt.raw_bind_parameter(parameter_index, row.navaid_frequency)?,
+            "vor_identifier" | "navaid_identifier" => {
+                stmt.raw_bind_parameter(parameter_index, row.navaid_identifier.as_str())?
+            }
+            "vor_latitude" | "navaid_latitude" => stmt.raw_bind_parameter(parameter_index, row.navaid_latitude)?,
+            "vor_longitude" | "navaid_longitude" => stmt.raw_bind_parameter(parameter_index, row.navaid_longitude)?,
+            "vor_name" | "navaid_name" => stmt.raw_bind_parameter(parameter_index, row.navaid_name.as_str())?,
+            "range" => stmt.raw_bind_parameter(parameter_index, row.range.as_str())?,
+            "station_declination" => match row.station_declination {
+                Some(v) => stmt.raw_bind_parameter(parameter_index, v)?,
+                None => stmt.raw_bind_parameter(parameter_index, Null)?,
+            },
+            "id" => stmt.raw_bind_parameter(parameter_index, row.id.as_str())?,
+            _ => stmt.raw_bind_parameter(parameter_index, Null)?,
+        }
     }
     stmt.raw_execute()?;
     Ok(())
 }
 
-fn insert_rows(conn: &RustSqliteConnection, rows: &[VhfInsertRow]) -> Result<()> {
+fn insert_rows(
+    conn: &RustSqliteConnection,
+    table_name: &str,
+    columns: &[String],
+    rows: &[VhfInsertRow],
+    magnetic_variations: Option<&[f64]>,
+) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let sql = "INSERT INTO tbl_d_vhfnavaids (airport_identifier, area_code, continent, country, datum_code, dme_elevation, dme_ident, dme_latitude, dme_longitude, icao_code, ilsdme_bias, magnetic_variation, navaid_class, navaid_frequency, navaid_identifier, navaid_latitude, navaid_longitude, navaid_name, range, station_declination) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let sql = build_insert_sql(table_name, columns);
     conn.with_connection_native(|raw_conn| {
         let batch = 500;
         for start in (0..rows.len()).step_by(batch) {
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(sql)?;
-                for row in rows.iter().take(end).skip(start) {
-                    bind_vhf_row(&mut stmt, row)?;
+                let mut stmt = tx.prepare(&sql)?;
+                for (offset, row) in rows[start..end].iter().enumerate() {
+                    let row_index = start + offset;
+                    bind_vhf_row_for_columns(
+                        &mut stmt,
+                        row,
+                        magnetic_variations.map(|values| values[row_index]),
+                        columns,
+                    )?;
                 }
             }
             tx.commit()?;
@@ -245,10 +299,11 @@ pub(crate) fn process_vhfs_to_db(
     conn: &RustSqliteConnection,
 ) -> Result<usize> {
     conn.execute_statement_native(
-            "\n            CREATE TABLE IF NOT EXISTS tbl_d_vhfnavaids (\n                airport_identifier TEXT,\n                area_code TEXT,\n                continent TEXT,\n                country TEXT,\n                datum_code TEXT,\n                dme_elevation REAL,\n                dme_ident TEXT,\n                dme_latitude REAL,\n                dme_longitude REAL,\n                icao_code TEXT,\n                ilsdme_bias TEXT,\n                magnetic_variation REAL,\n                navaid_class TEXT,\n                navaid_frequency REAL,\n                navaid_identifier TEXT,\n                navaid_latitude REAL,\n                navaid_longitude REAL,\n                navaid_name TEXT,\n                range TEXT,\n                station_declination TEXT\n            )\n        ",
+            "\n            CREATE TABLE IF NOT EXISTS tbl_vhfnavaids (\n                airport_identifier TEXT,\n                area_code TEXT,\n                icao_code TEXT,\n                vor_identifier TEXT,\n                vor_name TEXT,\n                vor_frequency REAL,\n                navaid_class TEXT,\n                vor_latitude REAL,\n                vor_longitude REAL,\n                dme_ident TEXT,\n                dme_latitude REAL,\n                dme_longitude REAL,\n                dme_elevation REAL,\n                ilsdme_bias TEXT,\n                range TEXT,\n                station_declination REAL,\n                magnetic_variation REAL,\n                id TEXT\n            )\n        ",
             &[],
         )
         .map_err(sqlite_error)?;
+    let columns = conn.get_table_columns_native(VHFS_TABLE)?;
 
     let parsed_rows = parse_vhf_nav_file(file_path)
         .map_err(|err| anyhow!("parse_vhf_nav_file failed: {}", err))?;
@@ -262,7 +317,7 @@ pub(crate) fn process_vhfs_to_db(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let existing_pairs = fetch_existing_pairs_for_keys(conn, &unique_pairs, 500)
+    let existing_pairs = fetch_existing_pairs_for_keys(conn, VHFS_TABLE, &unique_pairs, 500)
         .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
 
     let mut navaid_mapping = HashMap::new();
@@ -314,14 +369,21 @@ pub(crate) fn process_vhfs_to_db(
         return Ok(0);
     }
 
-    let declinations = batch_get_magnetic_variations_internal(&coordinates)
-        .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {}", err))?;
+    let magnetic_variations = if columns.iter().any(|column| column == "magnetic_variation") {
+        Some(
+            batch_get_magnetic_variations_internal(&coordinates)
+                .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {}", err))?,
+        )
+    } else {
+        None
+    };
 
     let rows: Vec<VhfInsertRow> = pending_rows
         .into_iter()
-        .zip(declinations)
+        .enumerate()
         .map(
             |(
+                index,
                 (
                     airport_identifier,
                     icao_code,
@@ -335,16 +397,20 @@ pub(crate) fn process_vhfs_to_db(
                     nav_range,
                     has_dme_ident,
                 ),
-                magnetic_variation,
             )| {
-                let station_declination = if navaid_class == "VDHW " {
-                    Some(python_round(magnetic_variation))
+                let current_magnetic_variation = magnetic_variations
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied())
+                    .unwrap_or(0.0);
+                let station_declination = if navaid_class == "VDHW " && magnetic_variations.is_some() {
+                    Some(python_round(current_magnetic_variation))
                 } else {
                     None
                 };
+                let id = format!("{}{}", icao_code, navaid_identifier);
                 VhfInsertRow {
                     airport_identifier,
-                    area_code: "EEU".to_string(),
+                    area_code: area_code_for_icao(&icao_code).to_string(),
                     continent: "ASIA".to_string(),
                     country: "CHINA".to_string(),
                     datum_code: "WGE".to_string(),
@@ -358,7 +424,6 @@ pub(crate) fn process_vhfs_to_db(
                     dme_longitude: navaid_longitude,
                     icao_code,
                     ilsdme_bias: None,
-                    magnetic_variation,
                     navaid_class,
                     navaid_frequency,
                     navaid_identifier: navaid_identifier.clone(),
@@ -366,15 +431,17 @@ pub(crate) fn process_vhfs_to_db(
                     navaid_longitude,
                     navaid_name: navaid_name
                         .or_else(|| navaid_mapping.get(&navaid_identifier).cloned())
-                        .unwrap_or(navaid_identifier),
+                        .unwrap_or_else(|| navaid_identifier.clone()),
                     range: nav_range,
                     station_declination,
+                    id,
                 }
             },
         )
         .collect();
 
-    insert_rows(conn, &rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, VHFS_TABLE, &columns, &rows, magnetic_variations.as_deref())
+        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(rows.len())
 }
 

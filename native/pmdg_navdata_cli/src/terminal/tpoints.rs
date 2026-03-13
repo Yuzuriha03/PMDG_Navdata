@@ -2,8 +2,8 @@ use crate::core::db::{
     get_shared_connection, join_quoted_sqlite_identifiers, open_sqlite_connection,
     quote_sqlite_identifier, RustSqliteConnection,
 };
-use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use crate::core::parsers::parse_terminal_waypoints_file;
+use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use anyhow::{anyhow, Result};
 use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
@@ -25,6 +25,7 @@ struct TerminalWaypointRecord {
     waypoint_longitude: f64,
     waypoint_name: String,
     waypoint_type: String,
+    id: String,
 }
 
 impl TerminalWaypointRecord {
@@ -37,6 +38,7 @@ impl TerminalWaypointRecord {
         lat: f64,
         lon: f64,
     ) -> Self {
+        let id = format!("{}{}{}", region_code, icao_code, waypoint_identifier);
         Self {
             area_code: "EEU".to_string(),
             continent: "ASIA".to_string(),
@@ -49,6 +51,7 @@ impl TerminalWaypointRecord {
             waypoint_longitude: lon,
             waypoint_name,
             waypoint_type,
+            id,
         }
     }
 }
@@ -60,6 +63,7 @@ fn pair_query_batch_size(batch_size: usize) -> usize {
 
 fn fetch_existing_pairs(
     conn: &RustSqliteConnection,
+    table_name: &str,
     unique_pairs: &[(String, String)],
     batch_size: usize,
 ) -> Result<HashMap<String, HashSet<String>>> {
@@ -72,7 +76,8 @@ fn fetch_existing_pairs(
     for batch in unique_pairs.chunks(actual_batch_size) {
         let placeholders = vec!["(?,?)"; batch.len()].join(",");
         let query = format!(
-            "SELECT region_code, waypoint_identifier FROM tbl_pc_terminal_waypoints WHERE (region_code, waypoint_identifier) IN ({})",
+            "SELECT region_code, waypoint_identifier FROM {} WHERE (region_code, waypoint_identifier) IN ({})",
+            quote_sqlite_identifier(table_name),
             placeholders
         );
         let params = batch
@@ -98,11 +103,17 @@ fn fetch_existing_pairs(
     Ok(existing_pairs)
 }
 
-fn ensure_terminal_waypoints_index_native(conn: &RustSqliteConnection) -> Result<()> {
-    conn.execute_statement_native(
-        "CREATE INDEX IF NOT EXISTS idx_terminal_waypoints_region_identifier ON tbl_pc_terminal_waypoints(region_code, waypoint_identifier)",
-        &[],
-    )?;
+fn ensure_terminal_waypoints_index_native(
+    conn: &RustSqliteConnection,
+    table_name: &str,
+) -> Result<()> {
+    let index_name = format!("idx_{}_region_identifier", table_name);
+    let sql = format!(
+        "CREATE INDEX IF NOT EXISTS {} ON {}(region_code, waypoint_identifier)",
+        quote_sqlite_identifier(&index_name),
+        quote_sqlite_identifier(table_name)
+    );
+    conn.execute_statement_native(&sql, &[])?;
     Ok(())
 }
 
@@ -119,7 +130,7 @@ fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
 fn bind_row_for_columns(
     stmt: &mut Statement<'_>,
     record: &TerminalWaypointRecord,
-    magnetic_variation: f64,
+    magnetic_variation: Option<f64>,
     columns: &[String],
 ) -> rusqlite::Result<()> {
     for (index, column) in columns.iter().enumerate() {
@@ -130,7 +141,13 @@ fn bind_row_for_columns(
             "country" => stmt.raw_bind_parameter(parameter_index, record.country.as_str())?,
             "datum_code" => stmt.raw_bind_parameter(parameter_index, record.datum_code.as_str())?,
             "icao_code" => stmt.raw_bind_parameter(parameter_index, record.icao_code.as_str())?,
-            "magnetic_variation" => stmt.raw_bind_parameter(parameter_index, magnetic_variation)?,
+            "magnetic_variation" => {
+                if let Some(value) = magnetic_variation {
+                    stmt.raw_bind_parameter(parameter_index, value)?
+                } else {
+                    stmt.raw_bind_parameter(parameter_index, Null)?
+                }
+            }
             "region_code" => {
                 stmt.raw_bind_parameter(parameter_index, record.region_code.as_str())?
             }
@@ -149,6 +166,7 @@ fn bind_row_for_columns(
             "waypoint_type" => {
                 stmt.raw_bind_parameter(parameter_index, record.waypoint_type.as_str())?
             }
+            "id" => stmt.raw_bind_parameter(parameter_index, record.id.as_str())?,
             _ => stmt.raw_bind_parameter(parameter_index, Null)?,
         }
     }
@@ -162,13 +180,13 @@ fn insert_projected_rows(
     table_name: &str,
     columns: &[String],
     records: &[TerminalWaypointRecord],
-    declinations: &[f64],
+    magnetic_variations: Option<&[f64]>,
     batch_size: usize,
 ) -> Result<()> {
     if records.is_empty() {
         return Ok(());
     }
-    if records.len() != declinations.len() {
+    if magnetic_variations.is_some_and(|values| records.len() != values.len()) {
         return Err(anyhow!("records and declinations length mismatch"));
     }
 
@@ -182,7 +200,12 @@ fn insert_projected_rows(
             {
                 let mut stmt = tx.prepare(query.as_str())?;
                 for idx in start..end {
-                    bind_row_for_columns(&mut stmt, &records[idx], declinations[idx], columns)?;
+                    bind_row_for_columns(
+                        &mut stmt,
+                        &records[idx],
+                        magnetic_variations.map(|values| values[idx]),
+                        columns,
+                    )?;
                 }
             }
             tx.commit()?;
@@ -200,7 +223,7 @@ fn convert_terminal_waypoints_file_to_db(
     query_batch_size: usize,
     insert_batch_size: usize,
 ) -> Result<(usize, usize)> {
-    ensure_terminal_waypoints_index_native(conn)?;
+    ensure_terminal_waypoints_index_native(conn, table_name)?;
 
     let parsed = parse_terminal_waypoints_file(file_path)
         .map_err(|err| anyhow!("parse_terminal_waypoints_file failed: {}", err))?;
@@ -245,7 +268,7 @@ fn convert_terminal_waypoints_file_to_db(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let existing_pairs = fetch_existing_pairs(conn, &unique_pairs, query_batch_size)?;
+    let existing_pairs = fetch_existing_pairs(conn, table_name, &unique_pairs, query_batch_size)?;
 
     let new_records: Vec<TerminalWaypointRecord> = records
         .into_iter()
@@ -263,18 +286,22 @@ fn convert_terminal_waypoints_file_to_db(
         return Ok((parsed_count, 0));
     }
 
-    let coords = new_records
-        .iter()
-        .map(|record| (record.waypoint_latitude, record.waypoint_longitude))
-        .collect::<Vec<_>>();
-    let declinations = batch_get_magnetic_variations_internal(&coords)?;
     let columns = conn.get_table_columns_native(table_name)?;
+    let magnetic_variations = if columns.iter().any(|column| column == "magnetic_variation") {
+        let coords = new_records
+            .iter()
+            .map(|record| (record.waypoint_latitude, record.waypoint_longitude))
+            .collect::<Vec<_>>();
+        Some(batch_get_magnetic_variations_internal(&coords)?)
+    } else {
+        None
+    };
     insert_projected_rows(
         conn,
         table_name,
         &columns,
         &new_records,
-        &declinations,
+        magnetic_variations.as_deref(),
         insert_batch_size,
     )?;
 
@@ -356,7 +383,7 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         {
             let mut stmt = tx.prepare(&query).unwrap();
-            bind_row_for_columns(&mut stmt, &row, 3.5, &columns).unwrap();
+            bind_row_for_columns(&mut stmt, &row, Some(3.5), &columns).unwrap();
         }
         tx.commit().unwrap();
 
@@ -380,5 +407,58 @@ mod tests {
         assert!((inserted.2 - 31.1).abs() < f64::EPSILON);
         assert!((inserted.3 - 121.2).abs() < f64::EPSILON);
         assert!((inserted.4 - 3.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn binds_terminal_waypoint_id_for_new_schema() {
+        let row = TerminalWaypointRecord::from_parsed(
+            "01OH".to_string(),
+            "K5".to_string(),
+            "WADON".to_string(),
+            "WADON".to_string(),
+            "WMZ".to_string(),
+            39.49556389,
+            -84.30007778,
+        );
+        let columns = vec![
+            "region_code".to_string(),
+            "icao_code".to_string(),
+            "waypoint_identifier".to_string(),
+            "id".to_string(),
+        ];
+        let query = build_insert_sql("test_terminal_waypoints_new", &columns);
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_terminal_waypoints_new (region_code TEXT, icao_code TEXT, waypoint_identifier TEXT, id TEXT)",
+            [],
+        )
+        .unwrap();
+
+        let tx = conn.unchecked_transaction().unwrap();
+        {
+            let mut stmt = tx.prepare(&query).unwrap();
+            bind_row_for_columns(&mut stmt, &row, None, &columns).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let inserted = conn
+            .query_row(
+                "SELECT region_code, icao_code, waypoint_identifier, id FROM test_terminal_waypoints_new",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(inserted.0, "01OH");
+        assert_eq!(inserted.1, "K5");
+        assert_eq!(inserted.2, "WADON");
+        assert_eq!(inserted.3, "01OHK5WADON");
     }
 }

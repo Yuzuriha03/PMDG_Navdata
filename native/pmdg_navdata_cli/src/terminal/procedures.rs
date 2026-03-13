@@ -201,6 +201,13 @@ impl<'a> RefRequest<'a> {
 }
 
 impl CellValue {
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(value) => Some(value.as_ref()),
+            Self::Float(_) | Self::None => None,
+        }
+    }
+
     #[cfg(test)]
     fn as_f64(&self) -> Option<f64> {
         match self {
@@ -498,6 +505,37 @@ fn fallback_coord_cell(value: Option<f64>) -> CellValue {
     value.map(CellValue::Float).unwrap_or(CellValue::None)
 }
 
+fn build_reference_id_cell(
+    ref_table: &CellValue,
+    identifier: Option<&str>,
+    icao_code: Option<&str>,
+    airport_identifier: &str,
+) -> CellValue {
+    let Some(ref_table) = ref_table.as_str() else {
+        return CellValue::None;
+    };
+    let Some(identifier) = identifier.map(str::trim).filter(|value| !value.is_empty()) else {
+        return CellValue::None;
+    };
+    let Some(icao_code) = icao_code.map(str::trim).filter(|value| !value.is_empty()) else {
+        return CellValue::None;
+    };
+
+    let raw_id = match ref_table {
+        "tbl_airports" | "tbl_enroute_ndbnavaids" | "tbl_enroute_waypoints" | "tbl_vhfnavaids" => {
+            format!("{}{}", icao_code, identifier)
+        }
+        "tbl_terminal_ndbnavaids"
+        | "tbl_terminal_waypoints"
+        | "tbl_runways"
+        | "tbl_localizers_glideslopes"
+        | "tbl_gls" => format!("{}{}{}", airport_identifier, icao_code, identifier),
+        _ => return CellValue::None,
+    };
+
+    CellValue::Str(shared_str(format!("{}|{}", ref_table, raw_id)))
+}
+
 fn find_coordinates_with_cache(
     coord_cache: &SharedCoordinateCache,
     search_type: CoordinateSearchType,
@@ -694,10 +732,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             let center_waypoint_lon_raw = center_waypoint_coordinates.longitude;
             let center_is_airport = type_check(center_waypoint);
 
-            let match_airport_id = context
-                .config
-                .use_iaps_logic
-                .then_some(context.airport_identifier);
+            let match_airport_id = Some(context.airport_identifier);
             let requests = [
                 RefRequest::new(
                     MatchRequestKind::Waypoint,
@@ -734,6 +769,24 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             ) = clone_match_cells(&matched_rows[1]);
             let (center_waypoint_ref_table, center_waypoint_latitude, center_waypoint_longitude) =
                 clone_match_cells(&matched_rows[2]);
+            let waypoint_id = build_reference_id_cell(
+                &waypoint_ref_table,
+                waypoint_identifier,
+                waypoint_icao_code,
+                context.airport_identifier,
+            );
+            let recommended_id = build_reference_id_cell(
+                &recommended_navaid_ref_table,
+                recommended_navaid,
+                recommended_navaid_icao_code,
+                context.airport_identifier,
+            );
+            let center_id = build_reference_id_cell(
+                &center_waypoint_ref_table,
+                center_waypoint,
+                center_waypoint_icao_code,
+                context.airport_identifier,
+            );
 
             let mut altitude_description = extract_opt_field(&parts, 22);
             let altitude1 = parts.get(23).and_then(|value| parse_altitude(value));
@@ -764,6 +817,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                 .get(28)
                 .and_then(|value| convert_vertical_angle(value));
             let course_flag = course.is_some().then_some("M");
+            let distance_time = route_distance.is_some().then_some("D");
             let row_auth_required = row_requires_authorization(rnp, path_termination.as_deref());
             let group_key = needs_grouping.then(|| procedure_identifier.clone()).flatten();
 
@@ -789,7 +843,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                             course.map(CellValue::Float).unwrap_or(CellValue::None)
                         }
                         "ctl" => context.iaps_leg_type_cell.clone(),
-                        "distance_time" => CellValue::None,
+                        "distance_time" => string_cell(distance_time),
                         "gnss_fms_indication" => CellValue::None,
                         "lnav_authorized_sbas" => CellValue::None,
                         "lnav_level_service_name" => CellValue::None,
@@ -808,7 +862,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "recommended_navaid" | "recommanded_navaid" => {
                             string_cell(recommended_navaid)
                         }
-                        "recommended_navaid_id" | "recommanded_id" => CellValue::None,
+                        "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
                         "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
                         "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
                         "route_distance_holding_distance_time" => {
@@ -831,8 +885,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "waypoint_latitude" => waypoint_latitude.clone(),
                         "waypoint_longitude" => waypoint_longitude.clone(),
                         "waypoint_ref_table" => waypoint_ref_table.clone(),
-                        "center_id" | "id" => CellValue::None,
-                        "aircraft_category" => CellValue::None,
+                        "center_id" => center_id.clone(),
+                        "id" => waypoint_id.clone(),
+                        "aircraft_category" => string_cell(Some("J")),
                         _ => CellValue::None,
                     })
                     .collect::<Vec<_>>()
@@ -857,7 +912,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "course" | "magnetic_course" => {
                             course.map(CellValue::Float).unwrap_or(CellValue::None)
                         }
-                        "distance_time" => CellValue::None,
+                        "distance_time" => string_cell(distance_time),
                         "path_termination" => string_cell(path_termination),
                         "procedure_identifier" => string_cell(procedure_identifier.as_deref()),
                         "recommended_navaid_icao_code" => string_cell(recommended_navaid_icao_code),
@@ -871,7 +926,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "recommended_navaid" | "recommanded_navaid" => {
                             string_cell(recommended_navaid)
                         }
-                        "recommended_navaid_id" | "recommanded_id" => CellValue::None,
+                        "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
                         "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
                         "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
                         "route_distance_holding_distance_time" => {
@@ -894,8 +949,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "waypoint_latitude" => waypoint_latitude.clone(),
                         "waypoint_longitude" => waypoint_longitude.clone(),
                         "waypoint_ref_table" => waypoint_ref_table.clone(),
-                        "center_id" | "id" => CellValue::None,
-                        "aircraft_category" => CellValue::None,
+                        "center_id" => center_id.clone(),
+                        "id" => waypoint_id.clone(),
+                        "aircraft_category" => string_cell(Some("J")),
                         _ => CellValue::None,
                     })
                     .collect::<Vec<_>>()
@@ -1189,7 +1245,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir =
-            std::env::temp_dir().join(format!("inibuilds_navdata_cli_terminal_test_{}", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_terminal_test_{}", unique));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("ZBAA.dat"), "x").unwrap();
         std::fs::write(dir.join("KJFK.dat"), "x").unwrap();
@@ -1248,7 +1304,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("inibuilds_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
         conn.execute_statement_native(

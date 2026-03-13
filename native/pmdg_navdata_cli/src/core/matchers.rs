@@ -150,6 +150,7 @@ struct RefCandidate {
     lat: f64,
     lon: f64,
     region: Option<String>,
+    airport: Option<String>,
 }
 
 #[derive(Clone)]
@@ -185,6 +186,7 @@ fn push_candidate(
     lon: f64,
     ref_table: &'static str,
     region: Option<String>,
+    airport: Option<String>,
 ) {
     if identifier.is_empty() {
         return;
@@ -197,6 +199,7 @@ fn push_candidate(
             lat,
             lon,
             region,
+            airport,
         });
 }
 
@@ -239,7 +242,7 @@ fn append_rows_3_native(
         let Some(lon) = row.get::<_, Option<f64>>(2)? else {
             return Ok(());
         };
-        push_candidate(by_identifier, identifier, lat, lon, ref_table, None);
+        push_candidate(by_identifier, identifier, lat, lon, ref_table, None, None);
         Ok(())
     })?;
     Ok(())
@@ -299,7 +302,28 @@ fn append_rows_4_native(
             return Ok(());
         };
         let region: Option<String> = row.get(3)?;
-        push_candidate(by_identifier, identifier, lat, lon, ref_table, region);
+        push_candidate(by_identifier, identifier, lat, lon, ref_table, region, None);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn append_rows_4_airport_native(
+    conn: &RustSqliteConnection,
+    sql: &str,
+    by_identifier: &mut HashMap<String, Vec<RefCandidate>>,
+    ref_table: &'static str,
+) -> Result<()> {
+    conn.query_each_native(sql, &[], |row| {
+        let identifier: String = row.get(0)?;
+        let Some(lat) = row.get::<_, Option<f64>>(1)? else {
+            return Ok(());
+        };
+        let Some(lon) = row.get::<_, Option<f64>>(2)? else {
+            return Ok(());
+        };
+        let airport: Option<String> = row.get(3)?;
+        push_candidate(by_identifier, identifier, lat, lon, ref_table, None, airport);
         Ok(())
     })?;
     Ok(())
@@ -312,6 +336,7 @@ fn append_rows_scoped_native(
     latitude_column: &str,
     longitude_column: &str,
     region_column: Option<&str>,
+    airport_column: Option<&str>,
     by_identifier: &mut HashMap<String, Vec<RefCandidate>>,
     ref_table: &'static str,
     required_identifiers: &HashSet<Box<str>>,
@@ -327,21 +352,23 @@ fn append_rows_scoped_native(
 
     for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
         let placeholders = vec!["?"; chunk.len()].join(", ");
-        let sql = if let Some(region_column) = region_column {
-            format!(
-                "SELECT {identifier_column}, {latitude_column}, {longitude_column}, {region_column} FROM {table_name} WHERE {identifier_column} IN ({placeholders})"
-            )
-        } else {
-            format!(
-                "SELECT {identifier_column}, {latitude_column}, {longitude_column} FROM {table_name} WHERE {identifier_column} IN ({placeholders})"
-            )
-        };
+        let mut selected_columns = vec![identifier_column, latitude_column, longitude_column];
+        if let Some(region_column) = region_column {
+            selected_columns.push(region_column);
+        }
+        if let Some(airport_column) = airport_column {
+            selected_columns.push(airport_column);
+        }
+        let sql = format!(
+            "SELECT {} FROM {table_name} WHERE {identifier_column} IN ({placeholders})",
+            selected_columns.join(", ")
+        );
         let params = chunk
             .iter()
             .map(|identifier| rusqlite::types::Value::Text((*identifier).to_string()))
             .collect::<Vec<_>>();
 
-        if region_column.is_some() {
+        if region_column.is_some() || airport_column.is_some() {
             conn.query_each_native(&sql, &params, |row| {
                 let identifier: String = row.get(0)?;
                 let Some(lat) = row.get::<_, Option<f64>>(1)? else {
@@ -350,8 +377,21 @@ fn append_rows_scoped_native(
                 let Some(lon) = row.get::<_, Option<f64>>(2)? else {
                     return Ok(());
                 };
-                let region: Option<String> = row.get(3)?;
-                push_candidate(by_identifier, identifier, lat, lon, ref_table, region);
+                let mut next_index = 3;
+                let region = if region_column.is_some() {
+                    let value: Option<String> = row.get(next_index)?;
+                    next_index += 1;
+                    value
+                } else {
+                    None
+                };
+                let airport = if airport_column.is_some() {
+                    let value: Option<String> = row.get(next_index)?;
+                    value
+                } else {
+                    None
+                };
+                push_candidate(by_identifier, identifier, lat, lon, ref_table, region, airport);
                 Ok(())
             })?;
         } else {
@@ -363,7 +403,7 @@ fn append_rows_scoped_native(
                 let Some(lon) = row.get::<_, Option<f64>>(2)? else {
                     return Ok(());
                 };
-                push_candidate(by_identifier, identifier, lat, lon, ref_table, None);
+                push_candidate(by_identifier, identifier, lat, lon, ref_table, None, None);
                 Ok(())
             })?;
         }
@@ -380,6 +420,7 @@ fn load_scoped_candidates_native(
     latitude_column: &'static str,
     longitude_column: &'static str,
     region_column: Option<&'static str>,
+    airport_column: Option<&'static str>,
     ref_table: &'static str,
     required_identifiers: Arc<HashSet<Box<str>>>,
 ) -> Result<Vec<(String, RefCandidate)>> {
@@ -392,20 +433,22 @@ fn load_scoped_candidates_native(
             .collect::<Vec<_>>();
         for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
-            let sql = if let Some(region_column) = region_column {
-                format!(
-                    "SELECT {identifier_column}, {latitude_column}, {longitude_column}, {region_column} FROM {table_name} WHERE {identifier_column} IN ({placeholders})"
-                )
-            } else {
-                format!(
-                    "SELECT {identifier_column}, {latitude_column}, {longitude_column} FROM {table_name} WHERE {identifier_column} IN ({placeholders})"
-                )
-            };
+            let mut selected_columns = vec![identifier_column, latitude_column, longitude_column];
+            if let Some(region_column) = region_column {
+                selected_columns.push(region_column);
+            }
+            if let Some(airport_column) = airport_column {
+                selected_columns.push(airport_column);
+            }
+            let sql = format!(
+                "SELECT {} FROM {table_name} WHERE {identifier_column} IN ({placeholders})",
+                selected_columns.join(", ")
+            );
             let params = chunk
                 .iter()
                 .map(|identifier| rusqlite::types::Value::Text((*identifier).to_string()))
                 .collect::<Vec<_>>();
-            if region_column.is_some() {
+            if region_column.is_some() || airport_column.is_some() {
                 conn.query_each_native(&sql, &params, |row| {
                     let identifier: String = row.get(0)?;
                     let Some(lat) = row.get::<_, Option<f64>>(1)? else {
@@ -414,7 +457,20 @@ fn load_scoped_candidates_native(
                     let Some(lon) = row.get::<_, Option<f64>>(2)? else {
                         return Ok(());
                     };
-                    let region: Option<String> = row.get(3)?;
+                    let mut next_index = 3;
+                    let region = if region_column.is_some() {
+                        let value: Option<String> = row.get(next_index)?;
+                        next_index += 1;
+                        value
+                    } else {
+                        None
+                    };
+                    let airport = if airport_column.is_some() {
+                        let value: Option<String> = row.get(next_index)?;
+                        value
+                    } else {
+                        None
+                    };
                     rows.push((
                         identifier,
                         RefCandidate {
@@ -422,6 +478,7 @@ fn load_scoped_candidates_native(
                             lat,
                             lon,
                             region,
+                            airport,
                         },
                     ));
                     Ok(())
@@ -442,6 +499,7 @@ fn load_scoped_candidates_native(
                             lat,
                             lon,
                             region: None,
+                            airport: None,
                         },
                     ));
                     Ok(())
@@ -483,6 +541,7 @@ fn create_ref_table_matcher_from_db_parallel(
             "ndb_latitude",
             "ndb_longitude",
             None,
+            None,
             "tbl_enroute_ndbnavaids",
         ),
         (
@@ -490,6 +549,7 @@ fn create_ref_table_matcher_from_db_parallel(
             "vor_identifier",
             "vor_latitude",
             "vor_longitude",
+            None,
             None,
             "tbl_vhfnavaids",
         ),
@@ -499,6 +559,7 @@ fn create_ref_table_matcher_from_db_parallel(
             "ndb_latitude",
             "ndb_longitude",
             None,
+            Some("airport_identifier"),
             "tbl_terminal_ndbnavaids",
         ),
         (
@@ -506,6 +567,7 @@ fn create_ref_table_matcher_from_db_parallel(
             "waypoint_identifier",
             "waypoint_latitude",
             "waypoint_longitude",
+            None,
             None,
             "tbl_enroute_waypoints",
         ),
@@ -515,7 +577,35 @@ fn create_ref_table_matcher_from_db_parallel(
             "waypoint_latitude",
             "waypoint_longitude",
             Some("region_code"),
+            None,
             "tbl_terminal_waypoints",
+        ),
+        (
+            "tbl_runways",
+            "runway_identifier",
+            "runway_latitude",
+            "runway_longitude",
+            None,
+            Some("airport_identifier"),
+            "tbl_runways",
+        ),
+        (
+            "tbl_localizers_glideslopes",
+            "llz_identifier",
+            "llz_latitude",
+            "llz_longitude",
+            None,
+            Some("airport_identifier"),
+            "tbl_localizers_glideslopes",
+        ),
+        (
+            "tbl_gls",
+            "gls_ref_path_identifier",
+            "station_latitude",
+            "station_longitude",
+            None,
+            Some("airport_identifier"),
+            "tbl_gls",
         ),
     ];
 
@@ -533,6 +623,7 @@ fn create_ref_table_matcher_from_db_parallel(
                 spec.3,
                 spec.4,
                 spec.5,
+                spec.6,
                 required_identifiers,
             )
         }));
@@ -645,6 +736,14 @@ impl RefTableMatcher {
             for candidate in candidates {
                 if (candidate.lat - lat).abs() >= 0.01 || (candidate.lon - lon).abs() >= 0.01 {
                     continue;
+                }
+
+                if let Some(airport_id) = request.airport_id {
+                    if candidate.airport.as_deref().is_some()
+                        && candidate.airport.as_deref() != Some(airport_id)
+                    {
+                        continue;
+                    }
                 }
 
                 if candidate.ref_table == "tbl_terminal_waypoints" {
@@ -1070,6 +1169,7 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "ndb_latitude",
             "ndb_longitude",
             None,
+            None,
             &mut by_identifier,
             "tbl_enroute_ndbnavaids",
             required_identifiers,
@@ -1080,6 +1180,7 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "vor_identifier",
             "vor_latitude",
             "vor_longitude",
+            None,
             None,
             &mut by_identifier,
             "tbl_vhfnavaids",
@@ -1092,6 +1193,7 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "ndb_latitude",
             "ndb_longitude",
             None,
+            Some("airport_identifier"),
             &mut by_identifier,
             "tbl_terminal_ndbnavaids",
             required_identifiers,
@@ -1102,6 +1204,7 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "waypoint_identifier",
             "waypoint_latitude",
             "waypoint_longitude",
+            None,
             None,
             &mut by_identifier,
             "tbl_enroute_waypoints",
@@ -1114,8 +1217,45 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "waypoint_latitude",
             "waypoint_longitude",
             Some("region_code"),
+            None,
             &mut by_identifier,
             "tbl_terminal_waypoints",
+            required_identifiers,
+        )?;
+        append_rows_scoped_native(
+            conn,
+            "tbl_runways",
+            "runway_identifier",
+            "runway_latitude",
+            "runway_longitude",
+            None,
+            Some("airport_identifier"),
+            &mut by_identifier,
+            "tbl_runways",
+            required_identifiers,
+        )?;
+        append_rows_scoped_native(
+            conn,
+            "tbl_localizers_glideslopes",
+            "llz_identifier",
+            "llz_latitude",
+            "llz_longitude",
+            None,
+            Some("airport_identifier"),
+            &mut by_identifier,
+            "tbl_localizers_glideslopes",
+            required_identifiers,
+        )?;
+        append_rows_scoped_native(
+            conn,
+            "tbl_gls",
+            "gls_ref_path_identifier",
+            "station_latitude",
+            "station_longitude",
+            None,
+            Some("airport_identifier"),
+            &mut by_identifier,
+            "tbl_gls",
             required_identifiers,
         )?;
     } else {
@@ -1149,6 +1289,30 @@ pub(crate) fn create_ref_table_matcher_from_db(
             "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints",
             &mut by_identifier,
             "tbl_terminal_waypoints",
+        )?;
+        append_rows_4_airport_native(
+            conn,
+            "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids",
+            &mut by_identifier,
+            "tbl_terminal_ndbnavaids",
+        )?;
+        append_rows_4_airport_native(
+            conn,
+            "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways",
+            &mut by_identifier,
+            "tbl_runways",
+        )?;
+        append_rows_4_airport_native(
+            conn,
+            "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes",
+            &mut by_identifier,
+            "tbl_localizers_glideslopes",
+        )?;
+        append_rows_4_airport_native(
+            conn,
+            "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls",
+            &mut by_identifier,
+            "tbl_gls",
         )?;
     }
 

@@ -1,13 +1,16 @@
-use crate::core::db::RustSqliteConnection;
+use crate::core::db::{join_quoted_sqlite_identifiers, quote_sqlite_identifier, RustSqliteConnection};
 use crate::core::magnetic::batch_get_magnetic_variations_internal;
 use anyhow::{anyhow, Result};
+use rusqlite::types::Null;
 use rusqlite::types::Value as SqlValue;
+use rusqlite::Statement;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 const SQLITE_MAX_VARIABLE_NUMBER: usize = 999;
 const DAT_READER_CAPACITY: usize = 256 * 1024;
+const LOCALIZERS_TABLE: &str = "tbl_localizers_glideslopes";
 
 #[derive(Clone)]
 struct LocalizerInfo {
@@ -25,16 +28,33 @@ struct GsInsertRow {
     gs_latitude: f64,
     gs_longitude: f64,
     icao_code: String,
-    ils_mls_gls_category: i64,
-    llz_bearing: i64,
+    ils_mls_gls_category: String,
+    llz_bearing: f64,
     llz_frequency: f64,
     llz_identifier: String,
     llz_latitude: f64,
     llz_longitude: f64,
-    llz_truebearing: f64,
-    llz_width: i64,
+    llz_width: f64,
     runway_identifier: String,
     station_declination: f64,
+    id: String,
+}
+
+fn area_code_for_icao(icao_code: &str) -> &'static str {
+    match icao_code {
+        "VH" => "PAC",
+        _ => "EEU",
+    }
+}
+
+fn build_insert_sql(table_name: &str, columns: &[String]) -> String {
+    let placeholders = vec!["?"; columns.len()].join(", ");
+    format!(
+        "INSERT OR IGNORE INTO {} ({}) VALUES ({})",
+        quote_sqlite_identifier(table_name),
+        join_quoted_sqlite_identifiers(columns),
+        placeholders,
+    )
 }
 
 fn open_text_reader(file_path: &str) -> Result<BufReader<File>> {
@@ -108,6 +128,7 @@ fn parse_localizers(file_path: &str) -> Result<HashMap<(String, String, String),
 
 fn fetch_existing_keys_for_rows(
     conn: &RustSqliteConnection,
+    table_name: &str,
     keys: &[(String, String, String)],
     batch_size: usize,
 ) -> Result<HashSet<(String, String, String)>> {
@@ -122,7 +143,8 @@ fn fetch_existing_keys_for_rows(
     for chunk in keys.chunks(effective_batch) {
         let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(",");
         let query = format!(
-            "SELECT airport_identifier, runway_identifier, llz_identifier FROM tbl_pi_localizers_glideslopes WHERE (airport_identifier, runway_identifier, llz_identifier) IN ({})",
+            "SELECT airport_identifier, runway_identifier, llz_identifier FROM {} WHERE (airport_identifier, runway_identifier, llz_identifier) IN ({})",
+            quote_sqlite_identifier(table_name),
             placeholders
         );
         let params = chunk
@@ -148,43 +170,60 @@ fn fetch_existing_keys_for_rows(
     Ok(existing)
 }
 
-fn bind_gs_row(stmt: &mut rusqlite::Statement<'_>, row: &GsInsertRow) -> rusqlite::Result<()> {
-    stmt.raw_bind_parameter(1, row.airport_identifier.as_str())?;
-    stmt.raw_bind_parameter(2, row.area_code.as_str())?;
-    stmt.raw_bind_parameter(3, row.gs_angle)?;
-    stmt.raw_bind_parameter(4, row.gs_elevation)?;
-    stmt.raw_bind_parameter(5, row.gs_latitude)?;
-    stmt.raw_bind_parameter(6, row.gs_longitude)?;
-    stmt.raw_bind_parameter(7, row.icao_code.as_str())?;
-    stmt.raw_bind_parameter(8, row.ils_mls_gls_category)?;
-    stmt.raw_bind_parameter(9, row.llz_bearing)?;
-    stmt.raw_bind_parameter(10, row.llz_frequency)?;
-    stmt.raw_bind_parameter(11, row.llz_identifier.as_str())?;
-    stmt.raw_bind_parameter(12, row.llz_latitude)?;
-    stmt.raw_bind_parameter(13, row.llz_longitude)?;
-    stmt.raw_bind_parameter(14, row.llz_truebearing)?;
-    stmt.raw_bind_parameter(15, row.llz_width)?;
-    stmt.raw_bind_parameter(16, row.runway_identifier.as_str())?;
-    stmt.raw_bind_parameter(17, row.station_declination)?;
+fn bind_gs_row_for_columns(
+    stmt: &mut Statement<'_>,
+    row: &GsInsertRow,
+    columns: &[String],
+) -> rusqlite::Result<()> {
+    for (index, column) in columns.iter().enumerate() {
+        let parameter_index = index + 1;
+        match column.as_str() {
+            "airport_identifier" => stmt.raw_bind_parameter(parameter_index, row.airport_identifier.as_str())?,
+            "area_code" => stmt.raw_bind_parameter(parameter_index, row.area_code.as_str())?,
+            "gs_angle" => stmt.raw_bind_parameter(parameter_index, row.gs_angle)?,
+            "gs_elevation" => stmt.raw_bind_parameter(parameter_index, row.gs_elevation)?,
+            "gs_latitude" => stmt.raw_bind_parameter(parameter_index, row.gs_latitude)?,
+            "gs_longitude" => stmt.raw_bind_parameter(parameter_index, row.gs_longitude)?,
+            "icao_code" => stmt.raw_bind_parameter(parameter_index, row.icao_code.as_str())?,
+            "ils_mls_gls_category" => {
+                stmt.raw_bind_parameter(parameter_index, row.ils_mls_gls_category.as_str())?
+            }
+            "llz_bearing" => stmt.raw_bind_parameter(parameter_index, row.llz_bearing)?,
+            "llz_frequency" => stmt.raw_bind_parameter(parameter_index, row.llz_frequency)?,
+            "llz_identifier" => stmt.raw_bind_parameter(parameter_index, row.llz_identifier.as_str())?,
+            "llz_latitude" => stmt.raw_bind_parameter(parameter_index, row.llz_latitude)?,
+            "llz_longitude" => stmt.raw_bind_parameter(parameter_index, row.llz_longitude)?,
+            "llz_width" => stmt.raw_bind_parameter(parameter_index, row.llz_width)?,
+            "runway_identifier" => stmt.raw_bind_parameter(parameter_index, row.runway_identifier.as_str())?,
+            "station_declination" => stmt.raw_bind_parameter(parameter_index, row.station_declination)?,
+            "id" => stmt.raw_bind_parameter(parameter_index, row.id.as_str())?,
+            _ => stmt.raw_bind_parameter(parameter_index, Null)?,
+        }
+    }
     stmt.raw_execute()?;
     Ok(())
 }
 
-fn insert_rows(conn: &RustSqliteConnection, rows: &[GsInsertRow]) -> Result<()> {
+fn insert_rows(
+    conn: &RustSqliteConnection,
+    table_name: &str,
+    columns: &[String],
+    rows: &[GsInsertRow],
+) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let sql = "INSERT INTO tbl_pi_localizers_glideslopes (airport_identifier, area_code, gs_angle, gs_elevation, gs_latitude, gs_longitude, icao_code, ils_mls_gls_category, llz_bearing, llz_frequency, llz_identifier, llz_latitude, llz_longitude, llz_truebearing, llz_width, runway_identifier, station_declination) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let sql = build_insert_sql(table_name, columns);
     conn.with_connection_native(|raw_conn| {
         let batch = 500;
         for start in (0..rows.len()).step_by(batch) {
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(sql)?;
+                let mut stmt = tx.prepare(&sql)?;
                 for row in rows.iter().take(end).skip(start) {
-                    bind_gs_row(&mut stmt, row)?;
+                    bind_gs_row_for_columns(&mut stmt, row, columns)?;
                 }
             }
             tx.commit()?;
@@ -277,25 +316,26 @@ fn parse_gs_rows(file_path: &str) -> Result<Vec<GsInsertRow>> {
     let mut out = Vec::with_capacity(pending_rows.len());
 
     for (row, station_declination) in pending_rows.into_iter().zip(declinations) {
-        let llz_bearing = ((row.11 - station_declination).rem_euclid(360.0)) as i64;
+        let llz_bearing = (row.11 - station_declination).rem_euclid(360.0);
+        let id = format!("{}{}{}", row.0, row.5, row.8);
         out.push(GsInsertRow {
             airport_identifier: row.0,
-            area_code: "EEU".to_string(),
+            area_code: area_code_for_icao(&row.5).to_string(),
             gs_angle: row.1,
             gs_elevation: row.2,
             gs_latitude: row.3,
             gs_longitude: row.4,
             icao_code: row.5,
-            ils_mls_gls_category: row.6,
+            ils_mls_gls_category: row.6.to_string(),
             llz_bearing,
             llz_frequency: row.7,
             llz_identifier: row.8,
             llz_latitude: row.9,
             llz_longitude: row.10,
-            llz_truebearing: row.11,
-            llz_width: 3,
+            llz_width: 3.0,
             runway_identifier: row.12,
             station_declination,
+            id,
         });
     }
 
@@ -304,10 +344,11 @@ fn parse_gs_rows(file_path: &str) -> Result<Vec<GsInsertRow>> {
 
 pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection) -> Result<usize> {
     conn.execute_statement_native(
-            "\n            CREATE TABLE IF NOT EXISTS tbl_pi_localizers_glideslopes (\n                airport_identifier TEXT,\n                area_code TEXT,\n                gs_angle REAL,\n                gs_elevation INTEGER,\n                gs_latitude REAL,\n                gs_longitude REAL,\n                icao_code TEXT,\n                ils_mls_gls_category INTEGER,\n                llz_bearing INTEGER,\n                llz_frequency REAL,\n                llz_identifier TEXT,\n                llz_latitude REAL,\n                llz_longitude REAL,\n                llz_truebearing INTEGER,\n                llz_width REAL,\n                runway_identifier TEXT,\n                station_declination INTEGER\n            )\n        ",
+            "\n            CREATE TABLE IF NOT EXISTS tbl_localizers_glideslopes (\n                area_code TEXT,\n                icao_code TEXT,\n                airport_identifier TEXT,\n                runway_identifier TEXT,\n                llz_identifier TEXT,\n                llz_latitude REAL,\n                llz_longitude REAL,\n                llz_frequency REAL,\n                llz_bearing REAL,\n                llz_width REAL,\n                ils_mls_gls_category TEXT,\n                gs_latitude REAL,\n                gs_longitude REAL,\n                gs_angle REAL,\n                gs_elevation INTEGER,\n                station_declination REAL,\n                id TEXT\n            )\n        ",
             &[],
         )
         .map_err(sqlite_error)?;
+    let columns = conn.get_table_columns_native(LOCALIZERS_TABLE)?;
 
     let rows = parse_gs_rows(file_path).map_err(|err| anyhow!("parse_gs_rows failed: {}", err))?;
     let unique_keys = rows
@@ -322,7 +363,7 @@ pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection)
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let existing_keys = fetch_existing_keys_for_rows(conn, &unique_keys, 300)
+    let existing_keys = fetch_existing_keys_for_rows(conn, LOCALIZERS_TABLE, &unique_keys, 300)
         .map_err(|err| anyhow!("fetch_existing_keys_for_rows failed: {}", err))?;
 
     let new_rows: Vec<GsInsertRow> = rows
@@ -336,7 +377,8 @@ pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection)
         })
         .collect();
 
-    insert_rows(conn, &new_rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, LOCALIZERS_TABLE, &columns, &new_rows)
+        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(new_rows.len())
 }
 

@@ -781,13 +781,13 @@ fn prefetch_airway_coordinates(
 
         let query_template = match aid_type {
             "fix" => {
-                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_ea_enroute_waypoints WHERE waypoint_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
             }
             "vhf" => {
-                "SELECT navaid_identifier, navaid_latitude, navaid_longitude FROM tbl_d_vhfnavaids WHERE navaid_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
             }
             "ndb" => {
-                "SELECT navaid_identifier, navaid_latitude, navaid_longitude FROM tbl_db_enroute_ndbnavaids WHERE navaid_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
+                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','VM','VH') ORDER BY rowid"
             }
             _ => continue,
         };
