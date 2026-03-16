@@ -615,6 +615,18 @@ fn delete_zuls_special_procedures(conn: &RustSqliteConnection, table_name: &str)
     Ok(())
 }
 
+fn prepare_existing_proc_map(
+    conn: &RustSqliteConnection,
+    table_name: &str,
+    airport_identifiers: &[String],
+) -> Result<HashMap<String, HashSet<Option<String>>>> {
+    if airport_identifiers.iter().any(|airport_identifier| airport_identifier == "ZULS") {
+        delete_zuls_special_procedures(conn, table_name)?;
+    }
+
+    load_existing_proc_map_from_conn(conn, table_name, airport_identifiers)
+}
+
 fn build_reference_id_cell(
     ref_table: &CellValue,
     identifier: Option<&str>,
@@ -1199,11 +1211,7 @@ fn convert_terminal_cifp_to_db(
         }
     }
     let existing_proc_map =
-        load_existing_proc_map_from_conn(conn, &config.table_name, &airport_identifiers)?;
-
-    // Special-case cleanup: some ZULS procedures should be removed from the database
-    // before inserting any fresh CIFP-derived rows.
-    delete_zuls_special_procedures(conn, &config.table_name)?;
+        prepare_existing_proc_map(conn, &config.table_name, &airport_identifiers)?;
 
     let columns = procedure_columns(&config.table_name)?;
     let authorization_required_index = columns
@@ -1432,6 +1440,49 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("ZBAA"));
         assert!(!map.contains_key("ZSPD"));
+    }
+
+    #[test]
+    fn prepare_existing_proc_map_excludes_zuls_rows_deleted_before_import() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+        let db_path_str = db_path.to_string_lossy().into_owned();
+        let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
+
+        conn.execute_statement_native(
+            "CREATE TABLE tbl_sids (airport_identifier TEXT, procedure_identifier TEXT)",
+            &[],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_sids (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("DEP01".to_string()),
+            ],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_sids (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("KEEP".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let map = prepare_existing_proc_map(&conn, "tbl_sids", &[String::from("ZULS")]).unwrap();
+
+        conn.close_native();
+        let _ = std::fs::remove_file(db_path);
+
+        let zuls = map.get("ZULS").unwrap();
+        assert!(zuls.contains(&Some("KEEP".to_string())));
+        assert!(!zuls.contains(&Some("DEP01".to_string())));
     }
 
     #[test]
