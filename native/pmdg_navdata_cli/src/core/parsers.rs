@@ -49,7 +49,7 @@ fn parse_f64(input: &str) -> Option<f64> {
     input.parse().ok()
 }
 
-fn parse_nav_line_common<'a>(line: &'a str) -> Option<(Vec<&'a str>, &'a str)> {
+fn parse_nav_line_common(line: &str) -> Option<(Vec<&str>, &str)> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 12 {
         return None;
@@ -156,7 +156,7 @@ fn split_cifp_fields(
     min_fields: usize,
     fields: &mut Vec<(usize, usize)>,
 ) -> bool {
-    let line = line.trim_end_matches(|ch| matches!(ch, '\r' | '\n'));
+    let line = line.trim_end_matches(['\r', '\n']);
     if !line.starts_with(prefix) {
         return false;
     }
@@ -235,7 +235,7 @@ where
             break;
         }
         line_number += 1;
-        let trimmed = line.trim_end_matches(|ch| matches!(ch, '\r' | '\n'));
+        let trimmed = line.trim_end_matches(['\r', '\n']);
         if let Some(parsed) = parse_line(trimmed, line_number) {
             out.push(parsed);
         }
@@ -250,11 +250,8 @@ fn parse_terminal_waypoint_record(line: &str, line_number: usize) -> Option<Term
     }
 
     let parts: Vec<&str> = line.split_whitespace().collect();
-    let Some((is_enroute, region_code, icao_code, waypoint_identifier, waypoint_type, lat, lon)) =
-        parse_waypoint_line(&parts)
-    else {
-        return None;
-    };
+    let (is_enroute, region_code, icao_code, waypoint_identifier, waypoint_type, lat, lon) =
+        parse_waypoint_line(&parts)?;
 
     if is_enroute {
         return None;
@@ -278,11 +275,8 @@ fn parse_enroute_waypoint_record(line: &str, line_number: usize) -> Option<Enrou
     }
 
     let parts: Vec<&str> = line.split_whitespace().collect();
-    let Some((is_enroute, _region_code, icao_code, waypoint_identifier, waypoint_type, lat, lon)) =
-        parse_waypoint_line(&parts)
-    else {
-        return None;
-    };
+    let (is_enroute, _region_code, icao_code, waypoint_identifier, waypoint_type, lat, lon) =
+        parse_waypoint_line(&parts)?;
 
     if !is_enroute {
         return None;
@@ -292,9 +286,7 @@ fn parse_enroute_waypoint_record(line: &str, line_number: usize) -> Option<Enrou
 }
 
 fn parse_vhf_nav_record(line: &str) -> Option<VhfNavRow> {
-    let Some((parts, icao)) = parse_nav_line_common(line) else {
-        return None;
-    };
+    let (parts, icao) = parse_nav_line_common(line)?;
 
     let nav_type = parts[parts.len() - 1];
     if !matches!(nav_type, "VOR/DME" | "DME-ILS") {
@@ -353,9 +345,7 @@ fn parse_vhf_nav_record(line: &str) -> Option<VhfNavRow> {
 }
 
 fn parse_ndb_nav_record(line: &str) -> Option<NdbNavRow> {
-    let Some((parts, icao)) = parse_nav_line_common(line) else {
-        return None;
-    };
+    let (parts, icao) = parse_nav_line_common(line)?;
 
     if parts[8] != "ENRT" {
         return None;

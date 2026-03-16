@@ -150,8 +150,8 @@ fn insert_projected_rows(
             let tx = raw_conn.unchecked_transaction()?;
             {
                 let mut stmt = tx.prepare(query.as_str())?;
-                for idx in start..end {
-                    bind_row(&mut stmt, &records[idx])?;
+                for record in records.iter().take(end).skip(start) {
+                    bind_row(&mut stmt, record)?;
                 }
             }
             tx.commit()?;
@@ -304,7 +304,7 @@ mod tests {
 
         let tx = conn.unchecked_transaction().unwrap();
         {
-            let mut stmt = tx.prepare(&query).unwrap();
+            let mut stmt = tx.prepare(query).unwrap();
             stmt.raw_bind_parameter(1, row.region_code.as_str())
                 .unwrap();
             stmt.raw_bind_parameter(2, row.waypoint_identifier.as_str())
@@ -357,7 +357,7 @@ mod tests {
 
         let tx = conn.unchecked_transaction().unwrap();
         {
-            let mut stmt = tx.prepare(&query).unwrap();
+            let mut stmt = tx.prepare(query).unwrap();
             stmt.raw_bind_parameter(1, row.region_code.as_str())
                 .unwrap();
             stmt.raw_bind_parameter(2, row.icao_code.as_str()).unwrap();

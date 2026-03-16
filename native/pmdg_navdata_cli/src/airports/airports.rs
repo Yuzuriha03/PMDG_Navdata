@@ -340,7 +340,7 @@ fn insert_airport_rows(conn: &RustSqliteConnection, rows: &[AirportInsertRow]) -
             let end = (start + actual_batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(&sql)?;
+                let mut stmt = tx.prepare(sql)?;
                 for row in &rows[start..end] {
                     bind_airport_row(&mut stmt, row)?;
                 }

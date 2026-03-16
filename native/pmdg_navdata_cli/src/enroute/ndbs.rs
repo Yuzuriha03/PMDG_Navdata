@@ -100,7 +100,7 @@ fn insert_rows(conn: &RustSqliteConnection, rows: &[NdbInsertRow]) -> Result<()>
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(&sql)?;
+                let mut stmt = tx.prepare(sql)?;
                 for row in rows.iter().take(end).skip(start) {
                     bind_ndb_row(&mut stmt, row)?;
                 }

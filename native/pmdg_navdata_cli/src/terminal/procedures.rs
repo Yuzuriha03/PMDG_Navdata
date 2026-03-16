@@ -13,7 +13,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::types::Value as SqlValue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -278,7 +278,7 @@ fn collect_required_identifiers_from_line(
         return;
     }
 
-    let line = line.trim_end_matches(|ch| matches!(ch, '\r' | '\n'));
+    let line = line.trim_end_matches(['\r', '\n']);
     let target_fields = [4usize, 13usize, 30usize];
     let mut target_index = 0usize;
     let mut field_index = 0usize;
@@ -626,9 +626,7 @@ where
     S: BuildHasher,
     T: Hash,
 {
-    let mut hasher = hash_builder.build_hasher();
-    value.hash(&mut hasher);
-    hasher.finish()
+    hash_builder.hash_one(value)
 }
 
 fn match_ref_requests<'a, const N: usize>(
@@ -820,8 +818,8 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             );
 
             let mut altitude_description = extract_opt_field(&parts, 22);
-            let altitude1 = parts.get(23).and_then(|value| parse_altitude(value));
-            let altitude2 = parts.get(24).and_then(|value| parse_altitude(value));
+            let altitude1 = parts.get(23).and_then(parse_altitude);
+            let altitude2 = parts.get(24).and_then(parse_altitude);
             if altitude1.is_some() && altitude2.is_none() && altitude_description.is_none() {
                 altitude_description = Some("@");
             }
@@ -838,18 +836,16 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             let theta = parts
                 .get(18)
                 .and_then(|value| convert_divided_by(value, 10.0));
-            let rnp = parts.get(10).and_then(|value| convert_rnp(value));
+            let rnp = parts.get(10).and_then(convert_rnp);
             let route_distance = parts
                 .get(21)
                 .and_then(|value| convert_divided_by(value, 10.0));
             let speed_limit = extract_opt_field(&parts, 27);
             let speed_limit_description = extract_opt_field(&parts, 26);
-            let vertical_angle = parts
-                .get(28)
-                .and_then(|value| convert_vertical_angle(value));
+            let vertical_angle = parts.get(28).and_then(convert_vertical_angle);
             let course_flag = course.is_some().then_some("M");
             let distance_time = route_distance.is_some().then_some("D");
-            let row_auth_required = row_requires_authorization(rnp, path_termination.as_deref());
+            let row_auth_required = row_requires_authorization(rnp, path_termination);
             let group_key = needs_grouping
                 .then(|| procedure_identifier.clone())
                 .flatten();

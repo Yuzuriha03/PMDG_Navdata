@@ -577,7 +577,7 @@ fn insert_rows(conn: &RustSqliteConnection, rows: &[RunwayInsertRow]) -> Result<
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(&sql)?;
+                let mut stmt = tx.prepare(sql)?;
                 for row in &rows[start..end] {
                     bind_runway_row(&mut stmt, row)?;
                 }

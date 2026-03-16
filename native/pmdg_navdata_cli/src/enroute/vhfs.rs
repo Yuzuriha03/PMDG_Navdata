@@ -242,7 +242,7 @@ fn insert_rows(
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(&sql)?;
+                let mut stmt = tx.prepare(sql)?;
                 for (offset, row) in rows[start..end].iter().enumerate() {
                     let row_index = start + offset;
                     bind_vhf_row(&mut stmt, row, magnetic_variations[row_index])?;

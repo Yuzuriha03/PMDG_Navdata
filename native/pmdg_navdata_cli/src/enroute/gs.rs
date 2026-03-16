@@ -88,7 +88,7 @@ fn parse_localizers(file_path: &str) -> Result<HashMap<(String, String, String),
             break;
         }
 
-        let trimmed = line.trim_end_matches(|ch| matches!(ch, '\r' | '\n'));
+        let trimmed = line.trim_end_matches(['\r', '\n']);
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() < 12 || parts[0] != "4" {
             continue;
@@ -196,7 +196,7 @@ fn insert_rows(conn: &RustSqliteConnection, rows: &[GsInsertRow]) -> Result<()> 
             let end = (start + batch).min(rows.len());
             let tx = raw_conn.unchecked_transaction()?;
             {
-                let mut stmt = tx.prepare(&sql)?;
+                let mut stmt = tx.prepare(sql)?;
                 for row in rows.iter().take(end).skip(start) {
                     bind_gs_row(&mut stmt, row)?;
                 }
@@ -222,7 +222,7 @@ fn parse_gs_rows(file_path: &str) -> Result<Vec<GsInsertRow>> {
             break;
         }
 
-        let trimmed = line.trim_end_matches(|ch| matches!(ch, '\r' | '\n'));
+        let trimmed = line.trim_end_matches(['\r', '\n']);
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() < 12 || parts[0] != "6" {
             continue;
