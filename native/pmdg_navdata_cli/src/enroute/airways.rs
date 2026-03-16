@@ -853,6 +853,13 @@ fn apply_airway_direction_restrictions(rows: &mut [AirwayRecord], csv_rows: &[Pa
                     rows[current_idx].waypoint_identifier.as_str(),
                     rows[current_idx + 1].waypoint_identifier.as_str(),
                 )
+            } else if current_idx > route_start {
+                resolve_airway_direction_restriction(
+                    &direction_map,
+                    route_identifier.as_str(),
+                    rows[current_idx - 1].waypoint_identifier.as_str(),
+                    rows[current_idx].waypoint_identifier.as_str(),
+                )
             } else {
                 None
             };
@@ -1606,6 +1613,7 @@ mod tests {
             test_csv_row("A1", "AAA", Some("F"), Some("BBB")),
             test_csv_row("A1", "BBB", Some("X"), Some("CCC")),
             test_csv_row("B1", "DDD", Some("B"), Some("EEE")),
+            test_csv_row("D1", "HHH", Some("F"), Some("III")),
             test_csv_row("C1", "FFF", Some("F"), Some("GGG")),
         ];
 
@@ -1615,6 +1623,8 @@ mod tests {
             test_airway_record("A1", "CCC", 1010),
             test_airway_record("B1", "EEE", 1000),
             test_airway_record("B1", "DDD", 1005),
+            test_airway_record("D1", "HHH", 1000),
+            test_airway_record("D1", "III", 1005),
             test_airway_record("C1", "FFF", 1000),
             test_airway_record("C1", "XXX", 1005),
             test_airway_record("C1", "GGG", 1010),
@@ -1627,11 +1637,14 @@ mod tests {
         assert_eq!(rows[2].direction_restriction, None);
 
         assert_eq!(rows[3].direction_restriction.as_deref(), Some("F"));
-        assert_eq!(rows[4].direction_restriction, None);
+        assert_eq!(rows[4].direction_restriction.as_deref(), Some("F"));
 
-        assert_eq!(rows[5].direction_restriction, None);
-        assert_eq!(rows[6].direction_restriction, None);
+        assert_eq!(rows[5].direction_restriction.as_deref(), Some("F"));
+        assert_eq!(rows[6].direction_restriction.as_deref(), Some("F"));
+
         assert_eq!(rows[7].direction_restriction, None);
+        assert_eq!(rows[8].direction_restriction, None);
+        assert_eq!(rows[9].direction_restriction, None);
     }
 
     #[test]
