@@ -1,7 +1,8 @@
 use crate::core::parsers::{for_each_cifp_line, CifpFields};
 use crate::core::{
     db::{
-        ensure_nav_id_indexes, get_shared_connection, open_sqlite_connection, RustSqliteConnection,
+        ensure_nav_id_indexes, get_shared_connection, open_sqlite_connection,
+        quote_sqlite_identifier, RustSqliteConnection,
     },
     matchers::{
         get_shared_coordinate_cache, get_shared_ref_matcher, CoordinateLookupRequest,
@@ -534,7 +535,7 @@ fn load_existing_proc_map_from_conn(
         let placeholders = vec!["?"; chunk.len()].join(", ");
         let query = format!(
             "SELECT airport_identifier, procedure_identifier FROM {} WHERE airport_identifier IN ({})",
-            table_name,
+            quote_sqlite_identifier(table_name),
             placeholders,
         );
         let params = chunk
@@ -549,6 +550,69 @@ fn load_existing_proc_map_from_conn(
         })?;
     }
     Ok(out)
+}
+
+fn delete_zuls_special_procedures(conn: &RustSqliteConnection, table_name: &str) -> Result<()> {
+    const ZULS: &str = "ZULS";
+
+    match table_name {
+        "tbl_sids" => {
+            let query = format!(
+                "DELETE FROM {} WHERE airport_identifier = ?1 AND (procedure_identifier LIKE ?2 OR procedure_identifier LIKE ?3)",
+                quote_sqlite_identifier(table_name),
+            );
+            conn.execute_statement_native(
+                &query,
+                &[
+                    SqlValue::Text(ZULS.to_string()),
+                    SqlValue::Text("DEP%".to_string()),
+                    SqlValue::Text("EO%".to_string()),
+                ],
+            )?;
+        }
+        "tbl_stars" => {
+            const TO_REMOVE: &[&str] = &[
+                "DUM08A",
+                "DUM09A",
+                "DUM10A",
+                "DUM28A",
+                "IGD10A",
+                "IGD28A",
+                "IKU10A",
+                "IKU28A",
+            ];
+            let placeholders = vec!["?"; TO_REMOVE.len()].join(", ");
+            let query = format!(
+                "DELETE FROM {} WHERE airport_identifier = ?1 AND procedure_identifier IN ({})",
+                quote_sqlite_identifier(table_name),
+                placeholders,
+            );
+            let mut params: Vec<SqlValue> = Vec::with_capacity(1 + TO_REMOVE.len());
+            params.push(SqlValue::Text(ZULS.to_string()));
+            for id in TO_REMOVE {
+                params.push(SqlValue::Text(id.to_string()));
+            }
+            conn.execute_statement_native(&query, &params)?;
+        }
+        "tbl_iaps" => {
+            let query = format!(
+                "DELETE FROM {} WHERE airport_identifier = ?1 AND procedure_identifier LIKE ?2",
+                quote_sqlite_identifier(table_name),
+            );
+            conn.execute_statement_native(
+                &query,
+                &[
+                    SqlValue::Text(ZULS.to_string()),
+                    SqlValue::Text("R%".to_string()),
+                ],
+            )?;
+        }
+        _ => {
+            // not applicable
+        }
+    }
+
+    Ok(())
 }
 
 fn build_reference_id_cell(
@@ -1136,6 +1200,11 @@ fn convert_terminal_cifp_to_db(
     }
     let existing_proc_map =
         load_existing_proc_map_from_conn(conn, &config.table_name, &airport_identifiers)?;
+
+    // Special-case cleanup: some ZULS procedures should be removed from the database
+    // before inserting any fresh CIFP-derived rows.
+    delete_zuls_special_procedures(conn, &config.table_name)?;
+
     let columns = procedure_columns(&config.table_name)?;
     let authorization_required_index = columns
         .iter()
@@ -1363,5 +1432,198 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("ZBAA"));
         assert!(!map.contains_key("ZSPD"));
+    }
+
+    #[test]
+    fn deletes_zuls_special_sids() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+        let db_path_str = db_path.to_string_lossy().into_owned();
+        let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
+
+        conn.execute_statement_native(
+            "CREATE TABLE tbl_sids (airport_identifier TEXT, procedure_identifier TEXT)",
+            &[],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_sids (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("DEP01".to_string()),
+            ],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_sids (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("EO02".to_string()),
+            ],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_sids (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("KEEP".to_string()),
+            ],
+        )
+        .unwrap();
+
+        delete_zuls_special_procedures(&conn, "tbl_sids").unwrap();
+
+        let mut remaining = Vec::new();
+        conn.query_each_native(
+            "SELECT airport_identifier, procedure_identifier FROM tbl_sids",
+            &[],
+            |row| {
+                remaining.push((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(remaining.contains(&("ZULS".to_string(), "KEEP".to_string())));
+        assert!(!remaining.iter().any(|(a, p)| a == "ZULS" && p.starts_with("DEP")));
+        assert!(!remaining.iter().any(|(a, p)| a == "ZULS" && p.starts_with("EO")));
+
+        conn.close_native();
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn deletes_zuls_special_stars() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+        let db_path_str = db_path.to_string_lossy().into_owned();
+        let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
+
+        conn.execute_statement_native(
+            "CREATE TABLE tbl_stars (airport_identifier TEXT, procedure_identifier TEXT)",
+            &[],
+        )
+        .unwrap();
+        for proc in &[
+            "DUM08A",
+            "DUM09A",
+            "DUM10A",
+            "DUM28A",
+            "IGD10A",
+            "IGD28A",
+            "IKU10A",
+            "IKU28A",
+        ] {
+            conn.execute_statement_native(
+                "INSERT INTO tbl_stars (airport_identifier, procedure_identifier) VALUES (?, ?)",
+                &[
+                    SqlValue::Text("ZULS".to_string()),
+                    SqlValue::Text(proc.to_string()),
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute_statement_native(
+            "INSERT INTO tbl_stars (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("KEEP".to_string()),
+            ],
+        )
+        .unwrap();
+
+        delete_zuls_special_procedures(&conn, "tbl_stars").unwrap();
+
+        let mut remaining = Vec::new();
+        conn.query_each_native(
+            "SELECT airport_identifier, procedure_identifier FROM tbl_stars",
+            &[],
+            |row| {
+                remaining.push((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(remaining.contains(&("ZULS".to_string(), "KEEP".to_string())));
+        assert!(!remaining
+            .iter()
+            .any(|(a, p)| a == "ZULS" && [
+                "DUM08A",
+                "DUM09A",
+                "DUM10A",
+                "DUM28A",
+                "IGD10A",
+                "IGD28A",
+                "IKU10A",
+                "IKU28A",
+            ]
+            .contains(&p.as_str())));
+
+        conn.close_native();
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn deletes_zuls_special_iaps() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path =
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+        let db_path_str = db_path.to_string_lossy().into_owned();
+        let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
+
+        conn.execute_statement_native(
+            "CREATE TABLE tbl_iaps (airport_identifier TEXT, procedure_identifier TEXT)",
+            &[],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_iaps (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("R01".to_string()),
+            ],
+        )
+        .unwrap();
+        conn.execute_statement_native(
+            "INSERT INTO tbl_iaps (airport_identifier, procedure_identifier) VALUES (?, ?)",
+            &[
+                SqlValue::Text("ZULS".to_string()),
+                SqlValue::Text("KEEP".to_string()),
+            ],
+        )
+        .unwrap();
+
+        delete_zuls_special_procedures(&conn, "tbl_iaps").unwrap();
+
+        let mut remaining = Vec::new();
+        conn.query_each_native(
+            "SELECT airport_identifier, procedure_identifier FROM tbl_iaps",
+            &[],
+            |row| {
+                remaining.push((row.get::<_, String>(0)?, row.get::<_, String>(1)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(remaining.contains(&("ZULS".to_string(), "KEEP".to_string())));
+        assert!(!remaining
+            .iter()
+            .any(|(a, p)| a == "ZULS" && p.starts_with("R")));
+
+        conn.close_native();
+        let _ = std::fs::remove_file(db_path);
     }
 }
