@@ -281,19 +281,18 @@ fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Result<Vec<AirportInsert
 
 fn get_existing_airports(conn: &RustSqliteConnection) -> Result<HashSet<String>> {
     let mut out = HashSet::new();
-    conn.query_each_native(
-        "SELECT airport_identifier FROM tbl_airports",
-        &[],
-        |row| {
-            out.insert(row.get::<_, String>(0)?);
-            Ok(())
-        },
-    )
+    conn.query_each_native("SELECT airport_identifier FROM tbl_airports", &[], |row| {
+        out.insert(row.get::<_, String>(0)?);
+        Ok(())
+    })
     .map_err(sqlite_error)?;
     Ok(out)
 }
 
-fn bind_airport_row(stmt: &mut rusqlite::Statement<'_>, row: &AirportInsertRow) -> rusqlite::Result<()> {
+fn bind_airport_row(
+    stmt: &mut rusqlite::Statement<'_>,
+    row: &AirportInsertRow,
+) -> rusqlite::Result<()> {
     stmt.raw_bind_parameter(1, row.area_code.as_str())?;
     stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
     stmt.raw_bind_parameter(3, row.airport_identifier.as_str())?;
@@ -329,10 +328,7 @@ fn bind_airport_row(stmt: &mut rusqlite::Statement<'_>, row: &AirportInsertRow) 
     Ok(())
 }
 
-fn insert_airport_rows(
-    conn: &RustSqliteConnection,
-    rows: &[AirportInsertRow],
-) -> Result<()> {
+fn insert_airport_rows(conn: &RustSqliteConnection, rows: &[AirportInsertRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }

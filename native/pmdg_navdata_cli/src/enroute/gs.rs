@@ -184,10 +184,7 @@ fn bind_gs_row(stmt: &mut rusqlite::Statement<'_>, row: &GsInsertRow) -> rusqlit
     Ok(())
 }
 
-fn insert_rows(
-    conn: &RustSqliteConnection,
-    rows: &[GsInsertRow],
-) -> Result<()> {
+fn insert_rows(conn: &RustSqliteConnection, rows: &[GsInsertRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -353,8 +350,7 @@ pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection)
         })
         .collect();
 
-    insert_rows(conn, &new_rows)
-        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &new_rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(new_rows.len())
 }
 

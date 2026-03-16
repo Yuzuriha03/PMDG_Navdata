@@ -437,7 +437,10 @@ fn build_primary_rows(
             runway_width,
             surface_code: surface_code_from_num_surface(runway_data.num_surface),
             threshold_crossing_height: 50,
-            id: format!("{}{}{}", airport_icao, icao_code, formatted_runway_identifier),
+            id: format!(
+                "{}{}{}",
+                airport_icao, icao_code, formatted_runway_identifier
+            ),
         });
     }
 
@@ -530,7 +533,10 @@ fn build_supplementary_rows(
     result
 }
 
-fn bind_runway_row(stmt: &mut rusqlite::Statement<'_>, row: &RunwayInsertRow) -> rusqlite::Result<()> {
+fn bind_runway_row(
+    stmt: &mut rusqlite::Statement<'_>,
+    row: &RunwayInsertRow,
+) -> rusqlite::Result<()> {
     stmt.raw_bind_parameter(1, row.area_code.as_str())?;
     stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
     stmt.raw_bind_parameter(3, row.airport_identifier.as_str())?;
@@ -559,10 +565,7 @@ fn bind_runway_row(stmt: &mut rusqlite::Statement<'_>, row: &RunwayInsertRow) ->
     Ok(())
 }
 
-fn insert_rows(
-    conn: &RustSqliteConnection,
-    rows: &[RunwayInsertRow],
-) -> Result<()> {
+fn insert_rows(conn: &RustSqliteConnection, rows: &[RunwayInsertRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }

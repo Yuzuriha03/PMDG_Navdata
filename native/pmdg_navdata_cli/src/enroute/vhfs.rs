@@ -164,8 +164,7 @@ fn fetch_existing_pairs_for_keys(
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
             "SELECT vor_identifier, icao_code FROM {} WHERE (vor_identifier, icao_code) IN ({})",
-            table_name,
-            placeholders
+            table_name, placeholders
         );
         let params = chunk
             .iter()
@@ -354,10 +353,8 @@ pub(crate) fn process_vhfs_to_db(
                     has_dme_ident,
                 ),
             )| {
-                let current_magnetic_variation = magnetic_variations
-                    .get(index)
-                    .copied()
-                    .unwrap_or(0.0);
+                let current_magnetic_variation =
+                    magnetic_variations.get(index).copied().unwrap_or(0.0);
                 let station_declination = if navaid_class == "VDHW " {
                     Some(python_round(current_magnetic_variation))
                 } else {

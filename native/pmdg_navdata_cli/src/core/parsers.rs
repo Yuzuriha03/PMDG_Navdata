@@ -92,7 +92,9 @@ pub(crate) struct CifpFields<'a> {
 
 impl<'a> CifpFields<'a> {
     pub fn get(&self, idx: usize) -> Option<&'a str> {
-        self.ranges.get(idx).map(|&(start, end)| &self.line[start..end])
+        self.ranges
+            .get(idx)
+            .map(|&(start, end)| &self.line[start..end])
     }
 
     pub fn first(&self) -> Option<&'a str> {
@@ -494,12 +496,7 @@ mod tests {
         let mut rows = Vec::new();
 
         for_each_cifp_line(Cursor::new(content.as_bytes()), "APP", 4, |parts| {
-            rows.push(
-                parts
-                    .iter()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>(),
-            );
+            rows.push(parts.iter().map(str::to_string).collect::<Vec<_>>());
             Ok(())
         })
         .unwrap();

@@ -332,10 +332,7 @@ impl GeoMag {
                 } else {
                     let coeff_nm1 = n * coeff_stride + (m - 1);
                     let tc_nm1 = self.c[coeff_nm1] + dt * self.cd[coeff_nm1];
-                    (
-                        tc_mn * cp_m + tc_nm1 * sp_m,
-                        tc_mn * sp_m - tc_nm1 * cp_m,
-                    )
+                    (tc_mn * cp_m + tc_nm1 * sp_m, tc_mn * sp_m - tc_nm1 * cp_m)
                 };
 
                 bt -= ar * temp1 * dp_mn;

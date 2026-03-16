@@ -50,8 +50,7 @@ fn fetch_existing_pairs_for_keys(
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
             "SELECT ndb_identifier, icao_code FROM {} WHERE (ndb_identifier, icao_code) IN ({})",
-            table_name,
-            placeholders
+            table_name, placeholders
         );
         let params = chunk
             .iter()
@@ -89,10 +88,7 @@ fn bind_ndb_row(stmt: &mut rusqlite::Statement<'_>, row: &NdbInsertRow) -> rusql
     Ok(())
 }
 
-fn insert_rows(
-    conn: &RustSqliteConnection,
-    rows: &[NdbInsertRow],
-) -> Result<()> {
+fn insert_rows(conn: &RustSqliteConnection, rows: &[NdbInsertRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -135,8 +131,9 @@ pub(crate) fn process_ndbs_to_db(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let existing_pairs = fetch_existing_pairs_for_keys(conn, ENROUTE_NDBS_TABLE, &unique_pairs, 500)
-        .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
+    let existing_pairs =
+        fetch_existing_pairs_for_keys(conn, ENROUTE_NDBS_TABLE, &unique_pairs, 500)
+            .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
 
     let mut pending_rows: Vec<(String, String, String, f64, f64, f64, f64)> = Vec::new();
     let mut coordinates = Vec::new();
@@ -196,8 +193,7 @@ pub(crate) fn process_ndbs_to_db(
         )
         .collect();
 
-    insert_rows(conn, &rows)
-        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(rows.len())
 }
 

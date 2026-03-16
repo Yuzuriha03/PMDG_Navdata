@@ -1,8 +1,7 @@
 use crate::core::parsers::{for_each_cifp_line, CifpFields};
 use crate::core::{
     db::{
-        ensure_nav_id_indexes, get_shared_connection, open_sqlite_connection,
-        RustSqliteConnection,
+        ensure_nav_id_indexes, get_shared_connection, open_sqlite_connection, RustSqliteConnection,
     },
     matchers::{
         get_shared_coordinate_cache, get_shared_ref_matcher, CoordinateLookupRequest,
@@ -14,8 +13,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::types::Value as SqlValue;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
@@ -56,7 +55,10 @@ impl MatchCache {
     fn insert(&mut self, key: MatchCacheKey, row: MatchCellRow) {
         let hash = cache_hash(&self.hash_builder, &key);
         let entries = self.buckets.entry(hash).or_default();
-        if let Some((_, cached_row)) = entries.iter_mut().find(|(cached_key, _)| *cached_key == key) {
+        if let Some((_, cached_row)) = entries
+            .iter_mut()
+            .find(|(cached_key, _)| *cached_key == key)
+        {
             *cached_row = row;
             return;
         }
@@ -182,12 +184,7 @@ impl<'a> RefRequest<'a> {
     ) -> Self {
         Self {
             lookup_key: MatchCacheLookupKey::new(
-                kind,
-                identifier,
-                latitude,
-                longitude,
-                is_airport,
-                airport_id,
+                kind, identifier, latitude, longitude, is_airport, airport_id,
             ),
             request: RefMatchRequest {
                 identifier,
@@ -406,7 +403,12 @@ fn scan_airport_files(
     airport_prefixes: &[String],
 ) -> Result<Vec<String>> {
     let cache_key = airport_file_cache_key(source_dat_directory, airport_prefixes);
-    if let Some(cached) = airport_file_cache().lock().unwrap().get(&cache_key).cloned() {
+    if let Some(cached) = airport_file_cache()
+        .lock()
+        .unwrap()
+        .get(&cache_key)
+        .cloned()
+    {
         return Ok((*cached).clone());
     }
 
@@ -658,7 +660,8 @@ fn match_ref_requests<'a, const N: usize>(
     }
 
     if miss_count != 0 {
-        let matched_rows = matcher.match_batch_native(misses.into_iter().take(miss_count).flatten());
+        let matched_rows =
+            matcher.match_batch_native(misses.into_iter().take(miss_count).flatten());
         for output_index in 0..miss_count {
             let matched_index = miss_indices[output_index];
             let row = Arc::new(resolve_match_row(
@@ -706,7 +709,8 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
         context.config.min_fields,
         |parts| {
             let procedure_identifier = extract_opt_field_owned(&parts, 2);
-            if existing_procedures.is_some_and(|existing| existing.contains(&procedure_identifier)) {
+            if existing_procedures.is_some_and(|existing| existing.contains(&procedure_identifier))
+            {
                 return Ok(());
             }
 
@@ -846,7 +850,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             let course_flag = course.is_some().then_some("M");
             let distance_time = route_distance.is_some().then_some("D");
             let row_auth_required = row_requires_authorization(rnp, path_termination.as_deref());
-            let group_key = needs_grouping.then(|| procedure_identifier.clone()).flatten();
+            let group_key = needs_grouping
+                .then(|| procedure_identifier.clone())
+                .flatten();
 
             let row = if context.config.use_iaps_logic {
                 context
@@ -892,9 +898,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
                         "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
                         "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "route_distance_holding_distance_time" => {
-                            route_distance.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
+                        "route_distance_holding_distance_time" => route_distance
+                            .map(CellValue::Float)
+                            .unwrap_or(CellValue::None),
                         "route_type" => string_cell(route_type),
                         "seqno" => string_cell(seqno),
                         "speed_limit_description" => string_cell(speed_limit_description),
@@ -903,9 +909,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "transition_altitude" => string_cell(transition_altitude),
                         "transition_identifier" => string_cell(transition_identifier),
                         "turn_direction" => string_cell(turn_direction),
-                        "vertical_angle" => {
-                            vertical_angle.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
+                        "vertical_angle" => vertical_angle
+                            .map(CellValue::Float)
+                            .unwrap_or(CellValue::None),
                         "waypoint_description_code" => string_cell(waypoint_description_code),
                         "waypoint_icao_code" => string_cell(waypoint_icao_code),
                         "waypoint_identifier" => string_cell(waypoint_identifier),
@@ -956,9 +962,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
                         "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
                         "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "route_distance_holding_distance_time" => {
-                            route_distance.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
+                        "route_distance_holding_distance_time" => route_distance
+                            .map(CellValue::Float)
+                            .unwrap_or(CellValue::None),
                         "route_type" => string_cell(route_type),
                         "seqno" => string_cell(seqno),
                         "speed_limit_description" => string_cell(speed_limit_description),
@@ -967,9 +973,9 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                         "transition_altitude" => string_cell(transition_altitude),
                         "transition_identifier" => string_cell(transition_identifier),
                         "turn_direction" => string_cell(turn_direction),
-                        "vertical_angle" => {
-                            vertical_angle.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
+                        "vertical_angle" => vertical_angle
+                            .map(CellValue::Float)
+                            .unwrap_or(CellValue::None),
                         "waypoint_description_code" => string_cell(waypoint_description_code),
                         "waypoint_icao_code" => string_cell(waypoint_icao_code),
                         "waypoint_identifier" => string_cell(waypoint_identifier),
@@ -986,12 +992,13 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             .into_boxed_slice();
 
             if needs_grouping {
-                let group = grouped_records
-                    .entry(group_key)
-                    .or_insert_with(|| ProcedureGroupRows {
-                        auth_required: false,
-                        rows: Vec::new(),
-                    });
+                let group =
+                    grouped_records
+                        .entry(group_key)
+                        .or_insert_with(|| ProcedureGroupRows {
+                            auth_required: false,
+                            rows: Vec::new(),
+                        });
                 group.auth_required |= row_auth_required;
                 group.rows.push(row);
             } else {
@@ -1271,8 +1278,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_terminal_test_{}", unique));
+        let dir = std::env::temp_dir().join(format!("pmdg_navdata_cli_terminal_test_{}", unique));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("ZBAA.dat"), "x").unwrap();
         std::fs::write(dir.join("KJFK.dat"), "x").unwrap();

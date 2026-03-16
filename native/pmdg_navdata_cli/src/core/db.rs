@@ -11,7 +11,7 @@ const SQLITE_OPTIMIZATIONS: &[&str] = &[
     "PRAGMA synchronous = OFF",
     "PRAGMA cache_size = -64000",
     "PRAGMA temp_store = MEMORY",
-    "PRAGMA mmap_size = 268435456"
+    "PRAGMA mmap_size = 268435456",
 ];
 
 const SQLITE_RESTORE_PRAGMAS: &[&str] = &[
@@ -19,7 +19,7 @@ const SQLITE_RESTORE_PRAGMAS: &[&str] = &[
     "PRAGMA synchronous = FULL",
     "PRAGMA cache_size = -2000",
     "PRAGMA temp_store = DEFAULT",
-    "PRAGMA mmap_size = 0"
+    "PRAGMA mmap_size = 0",
 ];
 
 const NAV_ID_INDEX_STATEMENTS: &[&str] = &[

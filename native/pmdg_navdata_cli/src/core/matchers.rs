@@ -3,11 +3,11 @@ use crate::core::db::{
 };
 use crate::core::geo::haversine_m;
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -323,7 +323,15 @@ fn append_rows_4_airport_native(
             return Ok(());
         };
         let airport: Option<String> = row.get(3)?;
-        push_candidate(by_identifier, identifier, lat, lon, ref_table, None, airport);
+        push_candidate(
+            by_identifier,
+            identifier,
+            lat,
+            lon,
+            ref_table,
+            None,
+            airport,
+        );
         Ok(())
     })?;
     Ok(())
@@ -409,7 +417,15 @@ fn append_rows_scoped_native(
                 } else {
                     None
                 };
-                push_candidate(by_identifier, identifier, lat, lon, ref_table, region, airport);
+                push_candidate(
+                    by_identifier,
+                    identifier,
+                    lat,
+                    lon,
+                    ref_table,
+                    region,
+                    airport,
+                );
                 Ok(())
             })?;
         } else {
@@ -673,7 +689,10 @@ fn create_ref_table_matcher_from_db_parallel(
             .join()
             .map_err(|_| anyhow::anyhow!("parallel DB matcher worker panicked"))??
         {
-            by_identifier.entry(identifier).or_insert_with(Vec::new).push(candidate);
+            by_identifier
+                .entry(identifier)
+                .or_insert_with(Vec::new)
+                .push(candidate);
         }
     }
     Ok(RefTableMatcher {
@@ -846,11 +865,11 @@ impl CoordinateMatcher {
 
         if has_digit || id_len == 4 || id_len == 5 {
             if let Some(region) = request.region_code {
-                if let Some((lat, lon)) =
-                    self.fix_data_by_region
-                        .get(identifier)
-                        .and_then(|by_icao| by_icao.get(icao_code))
-                        .and_then(|by_region| by_region.get(region))
+                if let Some((lat, lon)) = self
+                    .fix_data_by_region
+                    .get(identifier)
+                    .and_then(|by_icao| by_icao.get(icao_code))
+                    .and_then(|by_region| by_region.get(region))
                 {
                     return (Some(*lat), Some(*lon));
                 }
@@ -1111,13 +1130,7 @@ pub(crate) fn create_coordinate_matcher_from_files(
                         let icao_code = icao_code_10.to_string();
                         let key = (identifier.clone(), icao_code.clone());
                         if seen_nav_keys.insert(key) {
-                            push_nav_entry(
-                                &mut matcher.nav_data,
-                                identifier,
-                                icao_code,
-                                lat,
-                                lon,
-                            );
+                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
                         }
                     }
 
@@ -1126,13 +1139,7 @@ pub(crate) fn create_coordinate_matcher_from_files(
                         let icao_code = icao_code_9.to_string();
                         let key = (identifier.clone(), icao_code.clone());
                         if seen_nav_keys.insert(key) {
-                            push_nav_entry(
-                                &mut matcher.nav_data,
-                                identifier,
-                                icao_code,
-                                lat,
-                                lon,
-                            );
+                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
                         }
                     }
 
@@ -1141,13 +1148,7 @@ pub(crate) fn create_coordinate_matcher_from_files(
                         let icao_code = identifier_8.to_string();
                         let key = (identifier.clone(), icao_code.clone());
                         if seen_nav_keys.insert(key) {
-                            push_nav_entry(
-                                &mut matcher.nav_data,
-                                identifier,
-                                icao_code,
-                                lat,
-                                lon,
-                            );
+                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
                         }
                     }
                 }

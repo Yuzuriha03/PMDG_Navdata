@@ -1,6 +1,4 @@
-use crate::core::db::{
-    get_shared_connection, open_sqlite_connection, RustSqliteConnection,
-};
+use crate::core::db::{get_shared_connection, open_sqlite_connection, RustSqliteConnection};
 use crate::core::parsers::parse_terminal_waypoints_file;
 use anyhow::{anyhow, Result};
 use rusqlite::types::Value as SqlValue;
@@ -107,12 +105,18 @@ fn ensure_terminal_waypoints_index_native(
 
 fn build_insert_sql(table_name: &str) -> Result<String> {
     if table_name != "tbl_terminal_waypoints" {
-        return Err(anyhow!("unsupported terminal waypoint table: {}", table_name));
+        return Err(anyhow!(
+            "unsupported terminal waypoint table: {}",
+            table_name
+        ));
     }
     Ok("INSERT OR IGNORE INTO tbl_terminal_waypoints (area_code, region_code, icao_code, waypoint_identifier, waypoint_name, waypoint_type, waypoint_latitude, waypoint_longitude, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string())
 }
 
-fn bind_row(stmt: &mut rusqlite::Statement<'_>, record: &TerminalWaypointRecord) -> rusqlite::Result<()> {
+fn bind_row(
+    stmt: &mut rusqlite::Statement<'_>,
+    record: &TerminalWaypointRecord,
+) -> rusqlite::Result<()> {
     stmt.raw_bind_parameter(1, record.area_code.as_str())?;
     stmt.raw_bind_parameter(2, record.region_code.as_str())?;
     stmt.raw_bind_parameter(3, record.icao_code.as_str())?;
@@ -301,8 +305,10 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         {
             let mut stmt = tx.prepare(&query).unwrap();
-            stmt.raw_bind_parameter(1, row.region_code.as_str()).unwrap();
-            stmt.raw_bind_parameter(2, row.waypoint_identifier.as_str()).unwrap();
+            stmt.raw_bind_parameter(1, row.region_code.as_str())
+                .unwrap();
+            stmt.raw_bind_parameter(2, row.waypoint_identifier.as_str())
+                .unwrap();
             stmt.raw_bind_parameter(3, row.waypoint_latitude).unwrap();
             stmt.raw_bind_parameter(4, row.waypoint_longitude).unwrap();
             stmt.raw_execute().unwrap();
@@ -352,9 +358,11 @@ mod tests {
         let tx = conn.unchecked_transaction().unwrap();
         {
             let mut stmt = tx.prepare(&query).unwrap();
-            stmt.raw_bind_parameter(1, row.region_code.as_str()).unwrap();
+            stmt.raw_bind_parameter(1, row.region_code.as_str())
+                .unwrap();
             stmt.raw_bind_parameter(2, row.icao_code.as_str()).unwrap();
-            stmt.raw_bind_parameter(3, row.waypoint_identifier.as_str()).unwrap();
+            stmt.raw_bind_parameter(3, row.waypoint_identifier.as_str())
+                .unwrap();
             stmt.raw_bind_parameter(4, row.id.as_str()).unwrap();
             stmt.raw_execute().unwrap();
         }

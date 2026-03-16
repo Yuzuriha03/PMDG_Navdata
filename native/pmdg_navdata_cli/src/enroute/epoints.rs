@@ -78,11 +78,15 @@ fn ensure_enroute_waypoints_index(conn: &RustSqliteConnection, table_name: &str)
         "CREATE INDEX IF NOT EXISTS idx_{}_icao_identifier ON {}(icao_code, waypoint_identifier)",
         table_name, table_name
     );
-    conn.execute_statement_native(&sql, &[]).map_err(sqlite_error)?;
+    conn.execute_statement_native(&sql, &[])
+        .map_err(sqlite_error)?;
     Ok(())
 }
 
-fn bind_enroute_row(stmt: &mut rusqlite::Statement<'_>, row: &EnrouteWaypointRow) -> rusqlite::Result<()> {
+fn bind_enroute_row(
+    stmt: &mut rusqlite::Statement<'_>,
+    row: &EnrouteWaypointRow,
+) -> rusqlite::Result<()> {
     stmt.raw_bind_parameter(1, row.area_code.as_str())?;
     stmt.raw_bind_parameter(2, row.icao_code.as_str())?;
     stmt.raw_bind_parameter(3, row.waypoint_identifier.as_str())?;
@@ -96,10 +100,7 @@ fn bind_enroute_row(stmt: &mut rusqlite::Statement<'_>, row: &EnrouteWaypointRow
     Ok(())
 }
 
-fn insert_rows(
-    conn: &RustSqliteConnection,
-    rows: &[EnrouteWaypointRow],
-) -> Result<()> {
+fn insert_rows(conn: &RustSqliteConnection, rows: &[EnrouteWaypointRow]) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -145,8 +146,9 @@ pub(crate) fn process_enroute_waypoints_to_db(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let existing_pairs = fetch_existing_pairs_for_keys(conn, ENROUTE_WAYPOINTS_TABLE, &unique_pairs, 500)
-        .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
+    let existing_pairs =
+        fetch_existing_pairs_for_keys(conn, ENROUTE_WAYPOINTS_TABLE, &unique_pairs, 500)
+            .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
 
     let mut coordinates = Vec::new();
     let mut rows: Vec<(String, String, String, f64, f64)> = Vec::new();
@@ -171,21 +173,24 @@ pub(crate) fn process_enroute_waypoints_to_db(
     let insert_rows_payload: Vec<EnrouteWaypointRow> = rows
         .into_iter()
         .map(
-            |(icao_code, waypoint_identifier, waypoint_type, latitude, longitude)| EnrouteWaypointRow {
-                id: format!("{}{}", icao_code, waypoint_identifier),
-                area_code: area_code_for_icao(&icao_code).to_string(),
-                icao_code,
-                waypoint_identifier: waypoint_identifier.clone(),
-                waypoint_latitude: latitude,
-                waypoint_longitude: longitude,
-                waypoint_name: waypoint_identifier,
-                waypoint_type,
-                waypoint_usage: "RB".to_string(),
+            |(icao_code, waypoint_identifier, waypoint_type, latitude, longitude)| {
+                EnrouteWaypointRow {
+                    id: format!("{}{}", icao_code, waypoint_identifier),
+                    area_code: area_code_for_icao(&icao_code).to_string(),
+                    icao_code,
+                    waypoint_identifier: waypoint_identifier.clone(),
+                    waypoint_latitude: latitude,
+                    waypoint_longitude: longitude,
+                    waypoint_name: waypoint_identifier,
+                    waypoint_type,
+                    waypoint_usage: "RB".to_string(),
+                }
             },
         )
         .collect();
 
-    insert_rows(conn, &insert_rows_payload).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &insert_rows_payload)
+        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
     Ok(insert_rows_payload.len())
 }
 

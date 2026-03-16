@@ -45,6 +45,7 @@ struct ParsedAirwayCsvRow {
     route_identifier: Box<str>,
     start_waypoint: Box<str>,
     start_code_type: AirwayCodeType,
+    direction_restriction: Option<Box<str>>,
     outbound_course: f64,
     inbound_distance: f64,
     end_waypoint: Option<Box<str>>,
@@ -93,7 +94,18 @@ type DbRouteMap = HashMap<String, Vec<DbRoutePoint>>;
 type ExistingRouteWaypoint = (String, String);
 type MaxSeqItem = (String, i64);
 type AirwayEndCsvLastRow = (String, Option<String>, Option<f64>, Option<AirwayCodeType>);
-type AirwayEndAppendPlanRow = (String, String, f64, Option<AirwayCodeType>, String, String, i64);
+type AirwayEndAppendPlanRow = (
+    String,
+    String,
+    f64,
+    Option<AirwayCodeType>,
+    String,
+    String,
+    i64,
+);
+type AirwayDirectionEndpoints = HashMap<String, String>;
+type AirwayDirectionStartMap = HashMap<String, AirwayDirectionEndpoints>;
+type AirwayDirectionRouteMap = HashMap<String, AirwayDirectionStartMap>;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RowSource {
@@ -379,10 +391,14 @@ fn trim_csv_field(field: &str) -> &str {
     field.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'))
 }
 
-fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 7]> {
+fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 8]> {
     let header = line.strip_prefix('\u{feff}').unwrap_or(line);
     let mut index_map = HashMap::new();
-    for (idx, field) in header.trim_end_matches(|ch| matches!(ch, '\r' | '\n')).split(',').enumerate() {
+    for (idx, field) in header
+        .trim_end_matches(|ch| matches!(ch, '\r' | '\n'))
+        .split(',')
+        .enumerate()
+    {
         index_map.insert(trim_csv_field(field), idx);
     }
 
@@ -398,6 +414,7 @@ fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 7]> {
         required("TXT_DESIG")?,
         required("CODE_POINT_START")?,
         required("CODE_TYPE_START")?,
+        optional("CODE_DIR"),
         optional("CODE_POINT_END"),
         optional("CODE_TYPE_END"),
         optional("VAL_MAG_TRACK"),
@@ -463,13 +480,15 @@ fn parse_airway_csv_rows_simple(csv_file: &str) -> Result<Vec<ParsedAirwayCsvRow
     parse_airway_csv_rows_simple_from_bufread(Cursor::new(content))
 }
 
-fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Result<Vec<ParsedAirwayCsvRow>> {
+fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(
+    mut reader: R,
+) -> Result<Vec<ParsedAirwayCsvRow>> {
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(Vec::new());
     }
 
-    let [route_idx, start_wp_idx, start_code_idx, end_wp_idx, end_code_idx, mag_track_idx, len_idx] =
+    let [route_idx, start_wp_idx, start_code_idx, direction_idx, end_wp_idx, end_code_idx, mag_track_idx, len_idx] =
         parse_csv_header_indices_simple(&line)?;
 
     let mut out = Vec::new();
@@ -479,13 +498,14 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
             break;
         }
 
-        let [route, start_wp, start_code, end_wp, end_code, mag_track, length] =
+        let [route, start_wp, start_code, direction, end_wp, end_code, mag_track, length] =
             extract_csv_fields_simple(
                 &line,
                 &[
                     route_idx,
                     start_wp_idx,
                     start_code_idx,
+                    direction_idx,
                     end_wp_idx,
                     end_code_idx,
                     mag_track_idx,
@@ -497,11 +517,14 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(mut reader: R) -> Resul
             route_identifier: field_value(route),
             start_waypoint: field_value(start_wp),
             start_code_type: AirwayCodeType::parse(start_code.unwrap_or("")),
+            direction_restriction: optional_field_value(direction),
             outbound_course: field_f64_or_default(mag_track, 0.0),
             inbound_distance: ((field_f64_or_default(length, 0.0) * KM_TO_NM) * 100.0).round()
                 / 100.0,
             end_waypoint: optional_field_value(end_wp),
-            end_code_type: end_code.filter(|value| !value.is_empty()).map(AirwayCodeType::parse),
+            end_code_type: end_code
+                .filter(|value| !value.is_empty())
+                .map(AirwayCodeType::parse),
         });
     }
 
@@ -544,7 +567,11 @@ fn collect_airways_resolver_identifiers(rows: &[ParsedAirwayCsvRow]) -> Resolver
             _ => {}
         }
 
-        let Some(end_waypoint) = row.end_waypoint.as_deref().filter(|value| !value.is_empty()) else {
+        let Some(end_waypoint) = row
+            .end_waypoint
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
             continue;
         };
         match row.end_code_type {
@@ -623,7 +650,8 @@ fn load_earth_nav_items(
         "ZB", "ZS", "ZJ", "ZG", "ZY", "ZL", "ZU", "ZW", "ZP", "ZH", "ZZ", "VM", "VH", "RK",
     ];
     let allowed: HashSet<&str> = allowed.into_iter().collect();
-    let mut out = Vec::with_capacity(required_vor_dme_identifiers.len() + required_ndb_identifiers.len());
+    let mut out =
+        Vec::with_capacity(required_vor_dme_identifiers.len() + required_ndb_identifiers.len());
     let mut reader = open_dat_reader(file_path)?;
     let mut line = String::new();
 
@@ -731,6 +759,107 @@ fn start_code_mapping_from_type(
         AirwayCodeType::VorDme => Some(("vhf", "V C", "tbl_vhfnavaids")),
         AirwayCodeType::Ndb => Some(("ndb", "E C", "tbl_enroute_ndbnavaids")),
         AirwayCodeType::Other => None,
+    }
+}
+
+fn normalize_direction_restriction(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("X") {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn reverse_direction_restriction(value: &str) -> String {
+    if value.eq_ignore_ascii_case("F") {
+        "B".to_string()
+    } else if value.eq_ignore_ascii_case("B") {
+        "F".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn build_airway_direction_map(rows: &[ParsedAirwayCsvRow]) -> AirwayDirectionRouteMap {
+    let mut out = AirwayDirectionRouteMap::new();
+
+    for row in rows {
+        let Some(direction) = row
+            .direction_restriction
+            .as_deref()
+            .and_then(normalize_direction_restriction)
+        else {
+            continue;
+        };
+        let Some(end_waypoint) = row.end_waypoint.as_deref().map(str::trim) else {
+            continue;
+        };
+        if end_waypoint.is_empty() || row.start_waypoint.trim().is_empty() {
+            continue;
+        }
+
+        out.entry(row.route_identifier.to_string())
+            .or_default()
+            .entry(row.start_waypoint.trim().to_string())
+            .or_default()
+            .insert(end_waypoint.to_string(), direction);
+    }
+
+    out
+}
+
+fn resolve_airway_direction_restriction(
+    direction_map: &AirwayDirectionRouteMap,
+    route_identifier: &str,
+    current_waypoint: &str,
+    next_waypoint: &str,
+) -> Option<String> {
+    let route_map = direction_map.get(route_identifier)?;
+
+    if let Some(direction) = route_map
+        .get(current_waypoint)
+        .and_then(|endpoint_map| endpoint_map.get(next_waypoint))
+    {
+        return Some(direction.clone());
+    }
+
+    route_map
+        .get(next_waypoint)
+        .and_then(|endpoint_map| endpoint_map.get(current_waypoint))
+        .map(|direction| reverse_direction_restriction(direction))
+}
+
+fn apply_airway_direction_restrictions(rows: &mut [AirwayRecord], csv_rows: &[ParsedAirwayCsvRow]) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let direction_map = build_airway_direction_map(csv_rows);
+
+    let mut route_start = 0usize;
+    while route_start < rows.len() {
+        let route_identifier = rows[route_start].route_identifier.clone();
+        let mut route_end = route_start + 1;
+        while route_end < rows.len() && rows[route_end].route_identifier == route_identifier {
+            route_end += 1;
+        }
+
+        for current_idx in route_start..route_end {
+            let direction = if current_idx + 1 < route_end {
+                resolve_airway_direction_restriction(
+                    &direction_map,
+                    route_identifier.as_str(),
+                    rows[current_idx].waypoint_identifier.as_str(),
+                    rows[current_idx + 1].waypoint_identifier.as_str(),
+                )
+            } else {
+                None
+            };
+            rows[current_idx].direction_restriction = direction;
+        }
+
+        route_start = route_end;
     }
 }
 
@@ -1017,11 +1146,7 @@ fn append_airway_end_rows(
         let coords = end_code_type
             .and_then(start_code_mapping_from_type)
             .and_then(|(aid_type, _, _)| coord_cache.get(aid_type, end_wp.as_str()));
-        let id = build_airway_reference_id(
-            end_ref_table.as_str(),
-            icao_code.as_deref(),
-            &end_wp,
-        );
+        let id = build_airway_reference_id(end_ref_table.as_str(), icao_code.as_deref(), &end_wp);
         final_rows.push(AirwayRecord {
             area_code: "EEU".to_string(),
             crusing_table_identifier: Some("EE".to_string()),
@@ -1214,12 +1339,9 @@ pub(crate) fn process_airways_to_db(
 
     let resolver_identifiers = collect_airways_resolver_identifiers(&csv_rows);
 
-    let icao_resolver = get_scoped_airways_icao_resolver(
-        earth_fix_file,
-        earth_nav_file,
-        &resolver_identifiers,
-    )
-    .map_err(|err| anyhow!("get_scoped_airways_icao_resolver failed: {}", err))?;
+    let icao_resolver =
+        get_scoped_airways_icao_resolver(earth_fix_file, earth_nav_file, &resolver_identifiers)
+            .map_err(|err| anyhow!("get_scoped_airways_icao_resolver failed: {}", err))?;
 
     let coord_cache = prefetch_airway_coordinates(conn, &csv_rows)
         .map_err(|err| anyhow!("prefetch_airway_coordinates failed: {}", err))?;
@@ -1272,8 +1394,7 @@ pub(crate) fn process_airways_to_db(
         let placeholders = vec!["?"; chunk.len()].join(",");
         let query = format!(
             "DELETE FROM {} WHERE route_identifier IN ({})",
-            ENROUTE_AIRWAYS_TABLE,
-            placeholders
+            ENROUTE_AIRWAYS_TABLE, placeholders
         );
         let params = chunk
             .iter()
@@ -1302,6 +1423,8 @@ pub(crate) fn process_airways_to_db(
             .cmp(&right.route_identifier)
             .then(left.seqno.cmp(&right.seqno))
     });
+
+    apply_airway_direction_restrictions(&mut final_rows, &csv_rows);
 
     apply_airway_segment_metrics(&mut final_rows, &routes_with_missing)
         .map_err(|err| anyhow!("apply_airway_segment_metrics failed: {}", err))?;
@@ -1392,6 +1515,48 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    fn test_airway_record(route: &str, waypoint: &str, seqno: i64) -> AirwayRecord {
+        AirwayRecord {
+            area_code: "EEU".to_string(),
+            crusing_table_identifier: Some("EE".to_string()),
+            direction_restriction: Some("STALE".to_string()),
+            flightlevel: "B".to_string(),
+            icao_code: None,
+            inbound_course: 0.0,
+            inbound_distance: 0.0,
+            maximum_altitude: Some(99999),
+            minimum_altitude1: Some(5000),
+            minimum_altitude2: None,
+            outbound_course: 0.0,
+            route_identifier: route.to_string(),
+            route_type: "O".to_string(),
+            seqno,
+            waypoint_description_code: String::new(),
+            waypoint_identifier: waypoint.to_string(),
+            waypoint_latitude: None,
+            waypoint_longitude: None,
+            id: None,
+        }
+    }
+
+    fn test_csv_row(
+        route: &str,
+        start: &str,
+        direction: Option<&str>,
+        end: Option<&str>,
+    ) -> ParsedAirwayCsvRow {
+        ParsedAirwayCsvRow {
+            route_identifier: route.into(),
+            start_waypoint: start.into(),
+            start_code_type: AirwayCodeType::DesignatedPoint,
+            direction_restriction: direction.map(Into::into),
+            outbound_course: 0.0,
+            inbound_distance: 0.0,
+            end_waypoint: end.map(Into::into),
+            end_code_type: Some(AirwayCodeType::DesignatedPoint),
+        }
+    }
+
     #[test]
     fn airway_segment_metrics_default_when_coordinates_missing() {
         let tasks = vec![
@@ -1427,6 +1592,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_airway_csv_rows_reads_code_dir_column() {
+        let csv = "\u{feff}TXT_DESIG,CODE_POINT_START,CODE_TYPE_START,CODE_DIR,CODE_POINT_END,CODE_TYPE_END,VAL_MAG_TRACK,VAL_LEN\r\nA1,AAA,DESIGNATED_POINT,F,BBB,DESIGNATED_POINT,123,10\r\n";
+        let rows = parse_airway_csv_rows_simple_from_bufread(Cursor::new(csv)).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].direction_restriction.as_deref(), Some("F"));
+    }
+
+    #[test]
+    fn airway_direction_restrictions_follow_final_route_order() {
+        let csv_rows = vec![
+            test_csv_row("A1", "AAA", Some("F"), Some("BBB")),
+            test_csv_row("A1", "BBB", Some("X"), Some("CCC")),
+            test_csv_row("B1", "DDD", Some("B"), Some("EEE")),
+            test_csv_row("C1", "FFF", Some("F"), Some("GGG")),
+        ];
+
+        let mut rows = vec![
+            test_airway_record("A1", "AAA", 1000),
+            test_airway_record("A1", "BBB", 1005),
+            test_airway_record("A1", "CCC", 1010),
+            test_airway_record("B1", "EEE", 1000),
+            test_airway_record("B1", "DDD", 1005),
+            test_airway_record("C1", "FFF", 1000),
+            test_airway_record("C1", "XXX", 1005),
+            test_airway_record("C1", "GGG", 1010),
+        ];
+
+        apply_airway_direction_restrictions(&mut rows, &csv_rows);
+
+        assert_eq!(rows[0].direction_restriction.as_deref(), Some("F"));
+        assert_eq!(rows[1].direction_restriction, None);
+        assert_eq!(rows[2].direction_restriction, None);
+
+        assert_eq!(rows[3].direction_restriction.as_deref(), Some("F"));
+        assert_eq!(rows[4].direction_restriction, None);
+
+        assert_eq!(rows[5].direction_restriction, None);
+        assert_eq!(rows[6].direction_restriction, None);
+        assert_eq!(rows[7].direction_restriction, None);
+    }
+
+    #[test]
     fn load_earth_fix_items_keeps_zz_records() {
         let path = write_temp_test_file(
             "airway_fix_zz",
@@ -1437,8 +1645,12 @@ mod tests {
         let rows = load_earth_fix_items(&path, &required).unwrap();
         fs::remove_file(path).unwrap();
 
-        assert!(rows.iter().any(|(identifier, icao)| identifier == "FIXZZ" && icao == "ZZ"));
-        assert!(rows.iter().any(|(identifier, icao)| identifier == "FIXZS" && icao == "ZS"));
+        assert!(rows
+            .iter()
+            .any(|(identifier, icao)| identifier == "FIXZZ" && icao == "ZZ"));
+        assert!(rows
+            .iter()
+            .any(|(identifier, icao)| identifier == "FIXZS" && icao == "ZS"));
     }
 
     #[test]
@@ -1460,5 +1672,4 @@ mod tests {
             identifier == "NDBZZ" && nav_type == "NDB" && icao == "ZZ"
         }));
     }
-
 }
