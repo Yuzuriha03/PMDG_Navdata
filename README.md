@@ -7,7 +7,7 @@
 [![PMDG B777 Series](https://img.shields.io/badge/PMDG-B777%20Series-orange.svg)](https://pmdg.com/) 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](LICENSE)
 
-> Keep your PMDG B737 & B777 Series equipped with the latest navigation data for Microsoft Flight Simulator 2020 & 2024
+> A navigation-data tool that convters X-Plane 12 navdata into PMDG database format for Microsoft Flight Simulator 2020/2024.
 
 ## 📑 Table of Contents
 
