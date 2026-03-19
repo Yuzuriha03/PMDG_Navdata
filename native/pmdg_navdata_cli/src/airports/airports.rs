@@ -3,6 +3,7 @@ use crate::enroute::airways::parse_dms_list;
 use anyhow::{anyhow, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
 use encoding_rs::Encoding;
+use num_traits::ToPrimitive;
 use pinyin::ToPinyin;
 use std::collections::HashSet;
 use std::fs;
@@ -45,13 +46,13 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql() -> &'static str {
+const fn build_insert_sql() -> &'static str {
     "INSERT OR IGNORE INTO tbl_airports (area_code, icao_code, airport_identifier, airport_identifier_3letter, airport_name, airport_ref_latitude, airport_ref_longitude, ifr_capability, longest_runway_surface_code, elevation, transition_altitude, transition_level, speed_limit, speed_limit_altitude, iata_ata_designator, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn decode_gb18030_file(file_path: &str) -> Result<String> {
     let bytes =
-        fs::read(file_path).map_err(|err| anyhow!("failed to read {}: {}", file_path, err))?;
+        fs::read(file_path).map_err(|err| anyhow!("failed to read {file_path}: {err}"))?;
     let encoding = Encoding::for_label(b"gb18030")
         .ok_or_else(|| anyhow!("gb18030 encoding is unavailable"))?;
     let (text, _, _) = encoding.decode(&bytes);
@@ -62,7 +63,7 @@ fn required_index(headers: &StringRecord, column: &str) -> Result<usize> {
     headers
         .iter()
         .position(|value| value == column)
-        .ok_or_else(|| anyhow!("required airport CSV column missing: {}", column))
+        .ok_or_else(|| anyhow!("required airport CSV column missing: {column}"))
 }
 
 fn optional_index(headers: &StringRecord, column: &str) -> Option<usize> {
@@ -82,11 +83,11 @@ fn optional_f64(record: &StringRecord, index: Option<usize>) -> Option<f64> {
 }
 
 fn round_feet(value_meters: Option<f64>) -> Option<i64> {
-    value_meters.map(|value| (value * 3.28084).round() as i64)
+    value_meters.and_then(|value| (value * 3.28084).round().to_i64())
 }
 
 fn round_feet_hundreds(value_meters: Option<f64>) -> Option<i64> {
-    value_meters.map(|value| (((value * 3.28084) / 100.0).round() * 100.0) as i64)
+    value_meters.and_then(|value| (((value * 3.28084) / 100.0).round() * 100.0).to_i64())
 }
 
 fn special_phrase_pinyin(value: &str) -> Option<&'static str> {
@@ -135,9 +136,9 @@ fn to_upper_pinyin(value: &str) -> String {
     out.to_uppercase()
 }
 
-fn parse_names(txt_name: Option<&str>) -> Result<(String, String)> {
+fn parse_names(txt_name: Option<&str>) -> (String, String) {
     let Some(txt_name) = txt_name.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(("UNKNOWN".to_string(), "UNKNOWN".to_string()));
+        return ("UNKNOWN".to_string(), "UNKNOWN".to_string());
     };
 
     let mut parts = Vec::new();
@@ -150,7 +151,7 @@ fn parse_names(txt_name: Option<&str>) -> Result<(String, String)> {
     }
 
     if parts.is_empty() {
-        return Ok(("UNKNOWN".to_string(), "UNKNOWN".to_string()));
+        return ("UNKNOWN".to_string(), "UNKNOWN".to_string());
     }
 
     let city = parts[0].clone();
@@ -159,7 +160,7 @@ fn parse_names(txt_name: Option<&str>) -> Result<(String, String)> {
     } else {
         city.clone()
     };
-    Ok((city, airport))
+    (city, airport)
 }
 
 fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
@@ -170,7 +171,7 @@ fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
         .from_reader(content.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| anyhow!("failed to read airport CSV headers: {}", err))?
+        .map_err(|err| anyhow!("failed to read airport CSV headers: {err}"))?
         .clone();
 
     let code_id_idx = required_index(&headers, "CODE_ID")?;
@@ -179,8 +180,8 @@ fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
     let geo_lat_idx = required_index(&headers, "GEO_LAT_ACCURACY")?;
     let geo_lon_idx = required_index(&headers, "GEO_LONG_ACCURACY")?;
     let elev_idx = optional_index(&headers, "VAL_ELEV");
-    let ta_idx = optional_index(&headers, "VAL_TRANSITION_ALT");
-    let tl_idx = optional_index(&headers, "VAL_TRANSITION_LEVEL");
+    let transition_alt_idx = optional_index(&headers, "VAL_TRANSITION_ALT");
+    let transition_level_idx = optional_index(&headers, "VAL_TRANSITION_LEVEL");
 
     let mut code_ids: Vec<String> = Vec::new();
     let mut code_iatas: Vec<Option<String>> = Vec::new();
@@ -192,7 +193,7 @@ fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
     let mut transition_levels: Vec<Option<f64>> = Vec::new();
 
     for record in reader.records() {
-        let record = record.map_err(|err| anyhow!("failed to parse airport CSV row: {}", err))?;
+        let record = record.map_err(|err| anyhow!("failed to parse airport CSV row: {err}"))?;
         let code_id = record
             .get(code_id_idx)
             .map(str::trim)
@@ -220,8 +221,8 @@ fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
                 .map(str::to_string),
         );
         elevations.push(optional_f64(&record, elev_idx));
-        transition_alts.push(optional_f64(&record, ta_idx));
-        transition_levels.push(optional_f64(&record, tl_idx));
+        transition_alts.push(optional_f64(&record, transition_alt_idx));
+        transition_levels.push(optional_f64(&record, transition_level_idx));
     }
 
     let latitudes = parse_dms_list(lat_inputs.clone());
@@ -247,15 +248,15 @@ fn parse_airport_csv(csv_file: &str) -> Result<Vec<AirportCsvRow>> {
     Ok(rows)
 }
 
-fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Result<Vec<AirportInsertRow>> {
+fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Vec<AirportInsertRow> {
     if rows.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     let mut out = Vec::with_capacity(rows.len());
 
     for row in rows {
-        let (_, airport_name) = parse_names(row.txt_name.as_deref())?;
+        let (_, airport_name) = parse_names(row.txt_name.as_deref());
         let icao_code: String = row.code_id.chars().take(2).collect();
         out.push(AirportInsertRow {
             airport_identifier: row.code_id.clone(),
@@ -276,7 +277,7 @@ fn build_airport_insert_rows(rows: &[AirportCsvRow]) -> Result<Vec<AirportInsert
         });
     }
 
-    Ok(out)
+    out
 }
 
 fn get_existing_airports(conn: &RustSqliteConnection) -> Result<HashSet<String>> {
@@ -384,14 +385,11 @@ fn insert_zlyx_if_missing(
                     let transition_altitude: Option<i64> = row.get(7)?;
                     let transition_level: Option<i64> = row.get(8)?;
 
-                    let ata_iata_code = match iata_code {
-                        Some(value) => Some(value),
-                        None => Some(String::new()),
-                    };
+                    let ata_iata_code = Some(iata_code.unwrap_or_default());
                     let icao_code: String = airport_identifier.chars().take(2).collect();
                     zlyx = Some(AirportInsertRow {
                         airport_identifier: airport_identifier.clone(),
-                        airport_name: airport_name.clone(),
+                        airport_name,
                         airport_ref_latitude: latitude,
                         airport_ref_longitude: longitude,
                         area_code: area_code_for_icao(&icao_code).to_string(),
@@ -404,7 +402,7 @@ fn insert_zlyx_if_missing(
                         speed_limit: 250,
                         transition_altitude: transition_altitude.or(Some(0)),
                         transition_level: transition_level.or(Some(0)),
-                        id: format!("{}{}", icao_code, airport_identifier),
+                        id: format!("{icao_code}{airport_identifier}"),
                     });
                     Ok(())
                 },
@@ -421,15 +419,14 @@ fn insert_zlyx_if_missing(
     Ok(true)
 }
 
-pub(crate) fn process_airports_to_db(
+pub fn process_airports_to_db(
     csv_file: &str,
     master_db_path: &str,
     conn: &RustSqliteConnection,
 ) -> Result<(usize, bool)> {
     let rows =
-        parse_airport_csv(csv_file).map_err(|err| anyhow!("parse_airport_csv failed: {}", err))?;
-    let insert_rows = build_airport_insert_rows(&rows)
-        .map_err(|err| anyhow!("build_airport_insert_rows failed: {}", err))?;
+        parse_airport_csv(csv_file).map_err(|err| anyhow!("parse_airport_csv failed: {err}"))?;
+    let insert_rows = build_airport_insert_rows(&rows);
 
     conn.execute_statement_native(
             "CREATE TABLE IF NOT EXISTS tbl_airports (area_code TEXT(3), icao_code TEXT(2) NOT NULL, airport_identifier TEXT(4) NOT NULL, airport_identifier_3letter TEXT(3), airport_name TEXT(3), airport_ref_latitude DOUBLE(9), airport_ref_longitude DOUBLE(10), ifr_capability TEXT(1), longest_runway_surface_code TEXT(1), elevation INTEGER(5), transition_altitude INTEGER(5), transition_level INTEGER(5), speed_limit INTEGER(3), speed_limit_altitude INTEGER(5), iata_ata_designator TEXT(3), id TEXT(15))",
@@ -438,21 +435,21 @@ pub(crate) fn process_airports_to_db(
         .map_err(sqlite_error)?;
 
     let existing_airports = get_existing_airports(conn)
-        .map_err(|err| anyhow!("get_existing_airports failed: {}", err))?;
+        .map_err(|err| anyhow!("get_existing_airports failed: {err}"))?;
     let new_rows: Vec<AirportInsertRow> = insert_rows
         .into_iter()
         .filter(|row| !existing_airports.contains(&row.airport_identifier))
         .collect();
 
     insert_airport_rows(conn, &new_rows)
-        .map_err(|err| anyhow!("insert_airport_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("insert_airport_rows failed: {err}"))?;
     let inserted_zlyx = insert_zlyx_if_missing(master_db_path, &existing_airports, conn)
-        .map_err(|err| anyhow!("insert_zlyx_if_missing failed: {}", err))?;
+        .map_err(|err| anyhow!("insert_zlyx_if_missing failed: {err}"))?;
     Ok((new_rows.len(), inserted_zlyx))
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }
 
 #[cfg(test)]
@@ -471,22 +468,22 @@ mod tests {
     #[test]
     fn parses_airport_names_like_legacy_python_logic() {
         assert_eq!(
-            parse_names(Some("北京/机场")).unwrap(),
+            parse_names(Some("北京/机场")),
             ("BEIJING".to_string(), "JICHANG".to_string())
         );
         assert_eq!(
-            parse_names(Some("上海虹桥")).unwrap(),
+            parse_names(Some("上海虹桥")),
             (
                 "SHANGHAIHONGQIAO".to_string(),
                 "SHANGHAIHONGQIAO".to_string()
             )
         );
         assert_eq!(
-            parse_names(Some("重庆/仙女山")).unwrap(),
+            parse_names(Some("重庆/仙女山")),
             ("CHONGQING".to_string(), "XIANNÜSHAN".to_string())
         );
         assert_eq!(
-            parse_names(Some(" ")).unwrap(),
+            parse_names(Some(" ")),
             ("UNKNOWN".to_string(), "UNKNOWN".to_string())
         );
     }

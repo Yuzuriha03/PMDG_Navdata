@@ -6,7 +6,7 @@ const DAT_READER_CAPACITY: usize = 256 * 1024;
 
 fn parse_waypoint_type_decimal(code: &str) -> Option<String> {
     let value: u64 = code.parse().ok()?;
-    let hex_code = format!("{:x}", value);
+    let hex_code = format!("{value:x}");
 
     let len = hex_code.len();
     let g3 = if len >= 2 {
@@ -85,7 +85,7 @@ type VhfNavRow = (
 );
 type NdbNavRow = (String, String, String, f64, f64, f64, f64);
 
-pub(crate) struct CifpFields<'a> {
+pub struct CifpFields<'a> {
     line: &'a str,
     ranges: &'a [(usize, usize)],
 }
@@ -178,7 +178,7 @@ fn split_cifp_fields(
     true
 }
 
-pub(crate) fn for_each_cifp_line<R, F>(
+pub fn for_each_cifp_line<R, F>(
     mut reader: R,
     prefix: &str,
     min_fields: usize,
@@ -214,7 +214,7 @@ where
 
 fn open_text_reader(file_path: &str) -> Result<BufReader<File>> {
     let file =
-        File::open(file_path).map_err(|err| anyhow!("failed to open {}: {}", file_path, err))?;
+        File::open(file_path).map_err(|err| anyhow!("failed to open {file_path}: {err}"))?;
     Ok(BufReader::with_capacity(DAT_READER_CAPACITY, file))
 }
 
@@ -303,7 +303,7 @@ fn parse_vhf_nav_record(line: &str) -> Option<VhfNavRow> {
     let freq_raw = parts[4];
     let navaid_frequency: f64 = if freq_raw.len() >= 4 {
         let (head, tail) = freq_raw.split_at(3);
-        format!("{}.{}", head, tail).parse().ok()?
+        format!("{head}.{tail}").parse().ok()?
     } else {
         return None;
     };
@@ -319,7 +319,7 @@ fn parse_vhf_nav_record(line: &str) -> Option<VhfNavRow> {
         .get(10)
         .map(|v| v.trim())
         .filter(|v| !v.is_empty())
-        .map(|v| v.to_string());
+        .map(std::string::ToString::to_string);
 
     let navaid_class = if nav_type == "VOR/DME" {
         "VDHW ".to_string()
@@ -369,21 +369,21 @@ fn parse_ndb_nav_record(line: &str) -> Option<NdbNavRow> {
     ))
 }
 
-pub(crate) fn parse_terminal_waypoints_file(file_path: &str) -> Result<Vec<TerminalWaypointRow>> {
+pub fn parse_terminal_waypoints_file(file_path: &str) -> Result<Vec<TerminalWaypointRow>> {
     collect_parsed_lines(open_text_reader(file_path)?, parse_terminal_waypoint_record)
 }
 
-pub(crate) fn parse_enroute_waypoints_file(file_path: &str) -> Result<Vec<EnrouteWaypointRow>> {
+pub fn parse_enroute_waypoints_file(file_path: &str) -> Result<Vec<EnrouteWaypointRow>> {
     collect_parsed_lines(open_text_reader(file_path)?, parse_enroute_waypoint_record)
 }
 
-pub(crate) fn parse_vhf_nav_file(file_path: &str) -> Result<Vec<VhfNavRow>> {
+pub fn parse_vhf_nav_file(file_path: &str) -> Result<Vec<VhfNavRow>> {
     collect_parsed_lines(open_text_reader(file_path)?, |line, _| {
         parse_vhf_nav_record(line)
     })
 }
 
-pub(crate) fn parse_ndb_nav_file(file_path: &str) -> Result<Vec<NdbNavRow>> {
+pub fn parse_ndb_nav_file(file_path: &str) -> Result<Vec<NdbNavRow>> {
     collect_parsed_lines(open_text_reader(file_path)?, |line, _| {
         parse_ndb_nav_record(line)
     })

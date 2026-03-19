@@ -37,7 +37,7 @@ static SHARED_CONNECTIONS: OnceLock<Mutex<HashMap<String, ConnectionHandle>>> = 
 static CREATED_INDEX_GROUPS: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
 
 #[derive(Clone)]
-pub(crate) struct RustSqliteConnection {
+pub struct RustSqliteConnection {
     conn: ConnectionHandle,
 }
 
@@ -47,7 +47,7 @@ impl RustSqliteConnection {
             db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
         )?;
-        conn.busy_timeout(Duration::from_secs(timeout as u64))?;
+        conn.busy_timeout(Duration::from_secs(u64::from(timeout)))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(Some(conn))),
         })
@@ -55,7 +55,7 @@ impl RustSqliteConnection {
 
     pub fn open_read_only_native(db_path: &str, timeout: u32) -> rusqlite::Result<Self> {
         let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        conn.busy_timeout(Duration::from_secs(timeout as u64))?;
+        conn.busy_timeout(Duration::from_secs(u64::from(timeout)))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(Some(conn))),
         })
@@ -71,19 +71,21 @@ impl RustSqliteConnection {
         F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<()>,
     {
         let mut guard = self.conn.lock().unwrap();
-        let conn = guard.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
-
-        let mut stmt = conn.prepare(sql)?;
-        if stmt.column_count() == 0 {
-            stmt.execute(params_from_iter(params.iter()))?;
-            return Ok(());
-        }
-
-        let mut rows = stmt.query(params_from_iter(params.iter()))?;
-        while let Some(row) = rows.next()? {
-            on_row(row)?;
-        }
-        Ok(())
+        let result = {
+            let conn = guard.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
+            let mut stmt = conn.prepare(sql)?;
+            if stmt.column_count() == 0 {
+                stmt.execute(params_from_iter(params.iter()))?;
+            } else {
+                let mut rows = stmt.query(params_from_iter(params.iter()))?;
+                while let Some(row) = rows.next()? {
+                    on_row(row)?;
+                }
+            }
+            Ok(())
+        };
+        drop(guard);
+        result
     }
 
     pub fn execute_statement_native(&self, sql: &str, params: &[SqlValue]) -> rusqlite::Result<()> {
@@ -95,8 +97,12 @@ impl RustSqliteConnection {
         action: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
     ) -> rusqlite::Result<T> {
         let mut guard = self.conn.lock().unwrap();
-        let conn = guard.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
-        action(conn)
+        let result = {
+            let conn = guard.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
+            action(conn)
+        };
+        drop(guard);
+        result
     }
 
     pub fn optimize_native(&self) -> rusqlite::Result<()> {
@@ -120,7 +126,7 @@ impl RustSqliteConnection {
         *guard = None;
     }
 
-    fn from_handle(conn: ConnectionHandle) -> Self {
+    const fn from_handle(conn: ConnectionHandle) -> Self {
         Self { conn }
     }
 
@@ -129,7 +135,7 @@ impl RustSqliteConnection {
     }
 }
 
-pub(crate) fn quote_sqlite_identifier(identifier: &str) -> String {
+pub fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
@@ -178,37 +184,36 @@ where
     Ok(true)
 }
 
-pub(crate) fn open_sqlite_connection(db_path: &str, timeout: u32) -> Result<RustSqliteConnection> {
+pub fn open_sqlite_connection(db_path: &str, timeout: u32) -> Result<RustSqliteConnection> {
     RustSqliteConnection::open_native(db_path, timeout).map_err(Into::into)
 }
 
-pub(crate) fn open_sqlite_readonly_connection(
+pub fn open_sqlite_readonly_connection(
     db_path: &str,
     timeout: u32,
 ) -> Result<RustSqliteConnection> {
     RustSqliteConnection::open_read_only_native(db_path, timeout).map_err(Into::into)
 }
 
-pub(crate) fn set_shared_connection(db_path: &str, conn: &RustSqliteConnection) -> Result<()> {
+pub fn set_shared_connection(db_path: &str, conn: &RustSqliteConnection) {
     let normalized = normalize_db_path(db_path);
     shared_connections()
         .lock()
         .unwrap()
         .insert(normalized, conn.clone_handle());
-    Ok(())
 }
 
-pub(crate) fn get_shared_connection(db_path: &str) -> Result<Option<RustSqliteConnection>> {
+pub fn get_shared_connection(db_path: &str) -> Option<RustSqliteConnection> {
     let normalized = normalize_db_path(db_path);
-    Ok(shared_connections()
+    shared_connections()
         .lock()
         .unwrap()
         .get(&normalized)
         .cloned()
-        .map(RustSqliteConnection::from_handle))
+        .map(RustSqliteConnection::from_handle)
 }
 
-pub(crate) fn restore_database_pragmas_sqlite(db_path: &str, timeout: u32) -> Result<()> {
+pub fn restore_database_pragmas_sqlite(db_path: &str, timeout: u32) -> Result<()> {
     let conn = RustSqliteConnection::open_native(db_path, timeout)?;
     let result = (|| {
         conn.execute_statement_native("PRAGMA wal_checkpoint(TRUNCATE)", &[])?;
@@ -221,7 +226,7 @@ pub(crate) fn restore_database_pragmas_sqlite(db_path: &str, timeout: u32) -> Re
     result
 }
 
-pub(crate) fn close_shared_connection(db_path: &str, restore_on_close: bool) -> Result<()> {
+pub fn close_shared_connection(db_path: &str, restore_on_close: bool) -> Result<()> {
     let normalized = normalize_db_path(db_path);
     let conn = shared_connections().lock().unwrap().remove(&normalized);
     let Some(handle) = conn else {
@@ -246,7 +251,7 @@ fn ensure_nav_id_indexes_sqlite(db_path: &str, timeout: u32) -> Result<()> {
     result
 }
 
-pub(crate) fn ensure_nav_id_indexes(db_path: &str, timeout: u32) -> Result<()> {
+pub fn ensure_nav_id_indexes(db_path: &str, timeout: u32) -> Result<()> {
     let _ = run_index_group_once_inner(db_path, "nav_id_indexes", || {
         ensure_nav_id_indexes_sqlite(db_path, timeout)
     })?;

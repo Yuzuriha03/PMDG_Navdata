@@ -111,8 +111,8 @@ impl<'a> MatchCacheLookupKey<'a> {
         Self {
             kind,
             identifier,
-            latitude_bits: normalized_f64_bits(latitude),
-            longitude_bits: normalized_f64_bits(longitude),
+            latitude_bits: latitude.map(normalized_f64_bits),
+            longitude_bits: longitude.map(normalized_f64_bits),
             is_airport,
             airport_id,
         }
@@ -142,7 +142,7 @@ impl MatchCacheKey {
 }
 
 #[derive(Clone)]
-pub(crate) struct TerminalProcedureConfig {
+pub struct TerminalProcedureConfig {
     pub table_name: String,
     pub cifp_prefix: String,
     pub seqno_start: usize,
@@ -224,12 +224,10 @@ impl CellValue {
     }
 }
 
-fn normalized_f64_bits(value: Option<f64>) -> Option<u64> {
-    value.map(|number| {
-        let rounded = ((number * 100_000_000.0).round()) / 100_000_000.0;
-        let normalized = if rounded == 0.0 { 0.0 } else { rounded };
-        normalized.to_bits()
-    })
+fn normalized_f64_bits(number: f64) -> u64 {
+    let rounded = ((number * 100_000_000.0).round()) / 100_000_000.0;
+    let normalized = if rounded == 0.0 { 0.0 } else { rounded };
+    normalized.to_bits()
 }
 
 fn extract_opt_field<'a>(parts: &'a CifpFields<'a>, idx: usize) -> Option<&'a str> {
@@ -286,10 +284,9 @@ fn collect_required_identifiers_from_line(
     let mut start = 0usize;
 
     while target_index < target_fields.len() {
-        let end = match line[start..].find(',') {
-            Some(offset) => start + offset,
-            None => line.len(),
-        };
+        let end = line[start..]
+            .find(',')
+            .map_or(line.len(), |offset| start + offset);
 
         if field_index == target_fields[target_index] {
             let (trimmed_start, trimmed_end) = trim_ascii_whitespace_bounds(line, start, end);
@@ -332,8 +329,7 @@ where
 {
     value
         .map(Into::into)
-        .map(CellValue::Str)
-        .unwrap_or(CellValue::None)
+        .map_or(CellValue::None, CellValue::Str)
 }
 
 fn parse_altitude(alt_str: &str) -> Option<Arc<str>> {
@@ -378,15 +374,12 @@ fn convert_vertical_angle(value: &str) -> Option<f64> {
 }
 
 fn type_check(waypoint: Option<&str>, icao_code: Option<&str>) -> bool {
-    match waypoint {
-        Some(value) => {
-            let trimmed = value.trim();
-            trimmed.len() == 4
-                && trimmed.starts_with('Z')
-                && !matches!(icao_code.map(str::trim), Some("ZZ"))
-        }
-        None => false,
-    }
+    waypoint.is_some_and(|value| {
+        let trimmed = value.trim();
+        trimmed.len() == 4
+            && trimmed.starts_with('Z')
+            && !matches!(icao_code.map(str::trim), Some("ZZ"))
+    })
 }
 
 fn get_area_code(airport_identifier: &str) -> &'static str {
@@ -404,27 +397,25 @@ fn scan_airport_files(
     airport_prefixes: &[String],
 ) -> Result<Vec<String>> {
     let cache_key = airport_file_cache_key(source_dat_directory, airport_prefixes);
-    if let Some(cached) = airport_file_cache()
+    let cached_files = airport_file_cache()
         .lock()
         .unwrap()
         .get(&cache_key)
-        .cloned()
-    {
+        .cloned();
+    if let Some(cached) = cached_files {
         return Ok((*cached).clone());
     }
 
     let mut out = Vec::new();
     let entries = fs::read_dir(source_dat_directory).map_err(|err| {
         anyhow!(
-            "failed to read source_dat_directory {}: {}",
-            source_dat_directory,
-            err
+            "failed to read source_dat_directory {source_dat_directory}: {err}"
         )
     })?;
 
     for entry in entries {
         let entry =
-            entry.map_err(|err| anyhow!("failed to iterate source_dat_directory: {}", err))?;
+            entry.map_err(|err| anyhow!("failed to iterate source_dat_directory: {err}"))?;
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
         if !file_name.ends_with(".dat") {
@@ -470,7 +461,7 @@ fn build_insert_sql(table_name: &str) -> Result<String> {
         "tbl_sids" => "INSERT OR IGNORE INTO tbl_sids (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         "tbl_stars" => "INSERT OR IGNORE INTO tbl_stars (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         "tbl_iaps" => "INSERT OR IGNORE INTO tbl_iaps (area_code, airport_identifier, procedure_identifier, route_type, transition_identifier, seqno, waypoint_icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, turn_direction, rnp, path_termination, recommanded_navaid, recommanded_navaid_latitude, recommanded_navaid_longitude, arc_radius, theta, rho, magnetic_course, route_distance_holding_distance_time, distance_time, altitude_description, altitude1, altitude2, transition_altitude, speed_limit_description, speed_limit, vertical_angle, center_waypoint, center_waypoint_latitude, center_waypoint_longitude, aircraft_category, id, recommanded_id, center_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        _ => return Err(anyhow!("unsupported procedure table: {}", table_name)),
+        _ => return Err(anyhow!("unsupported procedure table: {table_name}")),
     };
     Ok(sql.to_string())
 }
@@ -516,7 +507,7 @@ fn procedure_columns(table_name: &str) -> Result<Vec<String>> {
             "recommanded_id",
             "center_id",
         ],
-        _ => return Err(anyhow!("unsupported procedure table: {}", table_name)),
+        _ => return Err(anyhow!("unsupported procedure table: {table_name}")),
     };
     Ok(columns.into_iter().map(str::to_string).collect())
 }
@@ -645,17 +636,17 @@ fn build_reference_id_cell(
 
     let raw_id = match ref_table {
         "tbl_airports" | "tbl_enroute_ndbnavaids" | "tbl_enroute_waypoints" | "tbl_vhfnavaids" => {
-            format!("{}{}", icao_code, identifier)
+            format!("{icao_code}{identifier}")
         }
         "tbl_terminal_ndbnavaids"
         | "tbl_terminal_waypoints"
         | "tbl_runways"
         | "tbl_localizers_glideslopes"
-        | "tbl_gls" => format!("{}{}{}", airport_identifier, icao_code, identifier),
+        | "tbl_gls" => format!("{airport_identifier}{icao_code}{identifier}"),
         _ => return CellValue::None,
     };
 
-    CellValue::Str(shared_str(format!("{}|{}", ref_table, raw_id)))
+    CellValue::Str(shared_str(format!("{ref_table}|{raw_id}")))
 }
 
 fn find_coordinates_with_cache(
@@ -677,18 +668,15 @@ fn matched_row_to_cells(row: RefMatchResult) -> MatchCellTuple {
     (
         row.ref_table
             .map(shared_str)
-            .map(CellValue::Str)
-            .unwrap_or(CellValue::None),
+            .map_or(CellValue::None, CellValue::Str),
         row.latitude
-            .map(CellValue::Float)
-            .unwrap_or(CellValue::None),
+            .map_or(CellValue::None, CellValue::Float),
         row.longitude
-            .map(CellValue::Float)
-            .unwrap_or(CellValue::None),
+            .map_or(CellValue::None, CellValue::Float),
     )
 }
 
-fn resolve_match_row(matched: MatchCellTuple) -> MatchCellTuple {
+const fn resolve_match_row(matched: MatchCellTuple) -> MatchCellTuple {
     matched
 }
 
@@ -741,9 +729,8 @@ fn match_ref_requests<'a, const N: usize>(
             let row = Arc::new(resolve_match_row(
                 matched_rows
                     .get(output_index)
-                    .cloned()
-                    .map(matched_row_to_cells)
-                    .unwrap_or((CellValue::None, CellValue::None, CellValue::None)),
+                    .copied()
+                    .map_or((CellValue::None, CellValue::None, CellValue::None), matched_row_to_cells),
             ));
             match_cache.insert(miss_keys[output_index].take().unwrap(), Arc::clone(&row));
             results[matched_index] = Some(row);
@@ -767,6 +754,296 @@ fn row_requires_authorization(rnp: Option<f64>, path_termination: Option<&str>) 
     }
 }
 
+struct MatchedProcedureCells<'a> {
+    waypoint_identifier: Option<&'a str>,
+    waypoint_icao_code: Option<&'a str>,
+    center_waypoint: Option<&'a str>,
+    center_waypoint_icao_code: Option<&'a str>,
+    recommended_navaid: Option<&'a str>,
+    recommended_navaid_icao_code: Option<&'a str>,
+    waypoint_ref_table: CellValue,
+    waypoint_latitude: CellValue,
+    waypoint_longitude: CellValue,
+    recommended_navaid_ref_table: CellValue,
+    recommended_navaid_latitude: CellValue,
+    recommended_navaid_longitude: CellValue,
+    center_waypoint_ref_table: CellValue,
+    center_waypoint_latitude: CellValue,
+    center_waypoint_longitude: CellValue,
+    waypoint_id: CellValue,
+    recommended_id: CellValue,
+    center_id: CellValue,
+}
+
+struct TerminalRowFields<'a> {
+    procedure_identifier: Option<String>,
+    group_key: Option<String>,
+    row_auth_required: bool,
+    route_type: Option<&'a str>,
+    transition_identifier: Option<&'a str>,
+    seqno: Option<&'a str>,
+    waypoint_description_code: Option<&'a str>,
+    turn_direction: Option<&'a str>,
+    path_termination: Option<&'a str>,
+    altitude_description: Option<Arc<str>>,
+    altitude1: Option<Arc<str>>,
+    altitude2: Option<Arc<str>>,
+    transition_altitude: Option<&'a str>,
+    arc_radius: Option<f64>,
+    course: Option<f64>,
+    rho: Option<f64>,
+    theta: Option<f64>,
+    rnp: Option<f64>,
+    route_distance: Option<f64>,
+    speed_limit: Option<&'a str>,
+    speed_limit_description: Option<&'a str>,
+    vertical_angle: Option<f64>,
+    course_flag: Option<&'static str>,
+    distance_time: Option<&'static str>,
+}
+
+fn resolve_matched_procedure_cells<'a>(
+    parts: &'a CifpFields<'a>,
+    context: &mut ProcedureBuildContext<'_>,
+) -> MatchedProcedureCells<'a> {
+    let waypoint_identifier = extract_opt_field(parts, 4);
+    let waypoint_icao_code = extract_opt_field(parts, 5);
+    let waypoint_coordinates = find_coordinates_with_cache(
+        context.coord_cache,
+        CoordinateSearchType::Waypoint,
+        waypoint_identifier,
+        waypoint_icao_code,
+        Some(context.airport_identifier),
+    );
+
+    let recommended_navaid = extract_opt_field(parts, 13);
+    let recommended_navaid_icao_code = recommended_navaid.and(waypoint_icao_code);
+    let recommended_navaid_coordinates = find_coordinates_with_cache(
+        context.coord_cache,
+        CoordinateSearchType::RecommendedNavaid,
+        recommended_navaid,
+        recommended_navaid_icao_code,
+        None,
+    );
+
+    let center_waypoint = extract_opt_field(parts, 30);
+    let center_waypoint_icao_code = center_waypoint.and(waypoint_icao_code);
+    let center_waypoint_coordinates = find_coordinates_with_cache(
+        context.coord_cache,
+        CoordinateSearchType::Center,
+        center_waypoint,
+        center_waypoint_icao_code,
+        Some(context.airport_identifier),
+    );
+
+    let match_airport_id = Some(context.airport_identifier);
+    let requests = [
+        RefRequest::new(
+            MatchRequestKind::Waypoint,
+            waypoint_identifier,
+            waypoint_coordinates.latitude,
+            waypoint_coordinates.longitude,
+            type_check(waypoint_identifier, waypoint_icao_code),
+            match_airport_id,
+        ),
+        RefRequest::new(
+            MatchRequestKind::RecommendedNavaid,
+            recommended_navaid,
+            recommended_navaid_coordinates.latitude,
+            recommended_navaid_coordinates.longitude,
+            false,
+            match_airport_id,
+        ),
+        RefRequest::new(
+            MatchRequestKind::Center,
+            center_waypoint,
+            center_waypoint_coordinates.latitude,
+            center_waypoint_coordinates.longitude,
+            type_check(center_waypoint, center_waypoint_icao_code),
+            match_airport_id,
+        ),
+    ];
+
+    let matched_rows = match_ref_requests(context.matcher, context.match_cache, requests);
+    let (waypoint_ref_table, waypoint_latitude, waypoint_longitude) = clone_match_cells(&matched_rows[0]);
+    let (recommended_navaid_ref_table, recommended_navaid_latitude, recommended_navaid_longitude) =
+        clone_match_cells(&matched_rows[1]);
+    let (center_waypoint_ref_table, center_waypoint_latitude, center_waypoint_longitude) =
+        clone_match_cells(&matched_rows[2]);
+
+    MatchedProcedureCells {
+        waypoint_identifier,
+        waypoint_icao_code,
+        center_waypoint,
+        center_waypoint_icao_code,
+        recommended_navaid,
+        recommended_navaid_icao_code,
+        waypoint_id: build_reference_id_cell(
+            &waypoint_ref_table,
+            waypoint_identifier,
+            waypoint_icao_code,
+            context.airport_identifier,
+        ),
+        recommended_id: build_reference_id_cell(
+            &recommended_navaid_ref_table,
+            recommended_navaid,
+            recommended_navaid_icao_code,
+            context.airport_identifier,
+        ),
+        center_id: build_reference_id_cell(
+            &center_waypoint_ref_table,
+            center_waypoint,
+            center_waypoint_icao_code,
+            context.airport_identifier,
+        ),
+        waypoint_ref_table,
+        waypoint_latitude,
+        waypoint_longitude,
+        recommended_navaid_ref_table,
+        recommended_navaid_latitude,
+        recommended_navaid_longitude,
+        center_waypoint_ref_table,
+        center_waypoint_latitude,
+        center_waypoint_longitude,
+    }
+}
+
+fn collect_terminal_row_fields<'a>(
+    parts: &'a CifpFields<'a>,
+    procedure_identifier: Option<String>,
+    needs_grouping: bool,
+    seqno_start: usize,
+    seqno_end: usize,
+) -> TerminalRowFields<'a> {
+    let route_type = extract_opt_field(parts, 1);
+    let transition_identifier = extract_opt_field(parts, 3);
+    let seq_source = parts.first().unwrap_or_default();
+    let seqno = seq_source
+        .get(seqno_start..seqno_end)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let waypoint_description_code = extract_opt_field(parts, 8);
+    let turn_direction = extract_opt_field(parts, 9);
+    let path_termination = extract_opt_field(parts, 11);
+
+    let mut altitude_description = extract_opt_field(parts, 22).map(shared_str);
+    let altitude1 = parts.get(23).and_then(parse_altitude);
+    let altitude2 = parts.get(24).and_then(parse_altitude);
+    if altitude1.is_some() && altitude2.is_none() && altitude_description.is_none() {
+        altitude_description = Some(shared_str("@"));
+    }
+
+    let transition_altitude = extract_opt_field(parts, 25);
+    let arc_radius = parts.get(17).and_then(|value| convert_divided_by(value, 1000.0));
+    let course = parts.get(20).and_then(|value| convert_divided_by(value, 10.0));
+    let rho = parts.get(19).and_then(|value| convert_divided_by(value, 10.0));
+    let theta = parts.get(18).and_then(|value| convert_divided_by(value, 10.0));
+    let rnp = parts.get(10).and_then(convert_rnp);
+    let route_distance = parts.get(21).and_then(|value| convert_divided_by(value, 10.0));
+    let speed_limit = extract_opt_field(parts, 27);
+    let speed_limit_description = extract_opt_field(parts, 26);
+    let vertical_angle = parts.get(28).and_then(convert_vertical_angle);
+
+    TerminalRowFields {
+        row_auth_required: row_requires_authorization(rnp, path_termination),
+        group_key: needs_grouping.then_some(procedure_identifier.clone()).flatten(),
+        course_flag: course.is_some().then_some("M"),
+        distance_time: route_distance.is_some().then_some("D"),
+        procedure_identifier,
+        route_type,
+        transition_identifier,
+        seqno,
+        waypoint_description_code,
+        turn_direction,
+        path_termination,
+        altitude_description,
+        altitude1,
+        altitude2,
+        transition_altitude,
+        arc_radius,
+        course,
+        rho,
+        theta,
+        rnp,
+        route_distance,
+        speed_limit,
+        speed_limit_description,
+        vertical_angle,
+    }
+}
+
+fn build_terminal_record_row(
+    context: &ProcedureBuildContext<'_>,
+    fields: &TerminalRowFields<'_>,
+    cells: &MatchedProcedureCells<'_>,
+) -> RecordRow {
+    context
+        .columns
+        .iter()
+        .map(|column| match column.as_str() {
+            "airport_identifier" => context.airport_identifier_cell.clone(),
+            "altitude_description" => string_cell(fields.altitude_description.clone()),
+            "altitude1" => string_cell(fields.altitude1.clone()),
+            "altitude2" => string_cell(fields.altitude2.clone()),
+            "arc_radius" => fields.arc_radius.map_or(CellValue::None, CellValue::Float),
+            "area_code" => context.area_code_cell.clone(),
+            "center_waypoint_icao_code" => string_cell(cells.center_waypoint_icao_code),
+            "center_waypoint_latitude" => cells.center_waypoint_latitude.clone(),
+            "center_waypoint_longitude" => cells.center_waypoint_longitude.clone(),
+            "center_waypoint_ref_table" => cells.center_waypoint_ref_table.clone(),
+            "center_waypoint" => string_cell(cells.center_waypoint),
+            "course_flag" => string_cell(fields.course_flag),
+            "course" | "magnetic_course" => fields.course.map_or(CellValue::None, CellValue::Float),
+            "ctl" => {
+                if context.config.use_iaps_logic {
+                    context.iaps_leg_type_cell.clone()
+                } else {
+                    CellValue::None
+                }
+            }
+            "distance_time" => string_cell(fields.distance_time),
+            "path_termination" => string_cell(fields.path_termination),
+            "procedure_identifier" => string_cell(fields.procedure_identifier.as_deref()),
+            "recommended_navaid_icao_code" => string_cell(cells.recommended_navaid_icao_code),
+            "recommended_navaid_latitude" | "recommanded_navaid_latitude" => {
+                cells.recommended_navaid_latitude.clone()
+            }
+            "recommended_navaid_longitude" | "recommanded_navaid_longitude" => {
+                cells.recommended_navaid_longitude.clone()
+            }
+            "recommended_navaid_ref_table" => cells.recommended_navaid_ref_table.clone(),
+            "recommended_navaid" | "recommanded_navaid" => string_cell(cells.recommended_navaid),
+            "recommended_navaid_id" | "recommanded_id" => cells.recommended_id.clone(),
+            "rho" => fields.rho.map_or(CellValue::None, CellValue::Float),
+            "rnp" => fields.rnp.map_or(CellValue::None, CellValue::Float),
+            "route_distance_holding_distance_time" => {
+                fields.route_distance.map_or(CellValue::None, CellValue::Float)
+            }
+            "route_type" => string_cell(fields.route_type),
+            "seqno" => string_cell(fields.seqno),
+            "speed_limit_description" => string_cell(fields.speed_limit_description),
+            "speed_limit" => string_cell(fields.speed_limit),
+            "theta" => fields.theta.map_or(CellValue::None, CellValue::Float),
+            "transition_altitude" => string_cell(fields.transition_altitude),
+            "transition_identifier" => string_cell(fields.transition_identifier),
+            "turn_direction" => string_cell(fields.turn_direction),
+            "vertical_angle" => fields.vertical_angle.map_or(CellValue::None, CellValue::Float),
+            "waypoint_description_code" => string_cell(fields.waypoint_description_code),
+            "waypoint_icao_code" => string_cell(cells.waypoint_icao_code),
+            "waypoint_identifier" => string_cell(cells.waypoint_identifier),
+            "waypoint_latitude" => cells.waypoint_latitude.clone(),
+            "waypoint_longitude" => cells.waypoint_longitude.clone(),
+            "waypoint_ref_table" => cells.waypoint_ref_table.clone(),
+            "center_id" => cells.center_id.clone(),
+            "id" => cells.waypoint_id.clone(),
+            "aircraft_category" => string_cell(Some("J")),
+            _ => CellValue::None,
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
 fn build_terminal_cifp_records_with_matcher<R: BufRead>(
     reader: R,
     context: &mut ProcedureBuildContext<'_>,
@@ -775,7 +1052,6 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
     let mut total_processed = 0usize;
     let mut grouped_records: HashMap<Option<String>, ProcedureGroupRows> = HashMap::new();
     let needs_grouping = context.config.use_iaps_logic || context.config.compute_auth;
-    let batch_records = &mut context.batch_records;
 
     for_each_cifp_line(
         reader,
@@ -787,283 +1063,18 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
             {
                 return Ok(());
             }
-
-            let route_type = extract_opt_field(&parts, 1);
-            let transition_identifier = extract_opt_field(&parts, 3);
-            let seq_source = parts.first().unwrap_or_default();
-            let seqno = seq_source
-                .get(context.config.seqno_start..context.config.seqno_end)
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-
-            let waypoint_identifier = extract_opt_field(&parts, 4);
-            let waypoint_icao_code = extract_opt_field(&parts, 5);
-            let waypoint_coordinates = find_coordinates_with_cache(
-                context.coord_cache,
-                CoordinateSearchType::Waypoint,
-                waypoint_identifier,
-                waypoint_icao_code,
-                Some(context.airport_identifier),
+            let matched_cells = resolve_matched_procedure_cells(&parts, context);
+            let row_fields = collect_terminal_row_fields(
+                &parts,
+                procedure_identifier,
+                needs_grouping,
+                context.config.seqno_start,
+                context.config.seqno_end,
             );
-            let waypoint_latitude_raw = waypoint_coordinates.latitude;
-            let waypoint_longitude_raw = waypoint_coordinates.longitude;
-            let waypoint_is_airport = type_check(waypoint_identifier, waypoint_icao_code);
-
-            let waypoint_description_code = extract_opt_field(&parts, 8);
-            let turn_direction = extract_opt_field(&parts, 9);
-            let path_termination = extract_opt_field(&parts, 11);
-            let recommended_navaid = extract_opt_field(&parts, 13);
-            let recommended_navaid_icao_code = recommended_navaid.and(waypoint_icao_code);
-            let recommended_navaid_coordinates = find_coordinates_with_cache(
-                context.coord_cache,
-                CoordinateSearchType::RecommendedNavaid,
-                recommended_navaid,
-                recommended_navaid_icao_code,
-                None,
-            );
-            let recommended_navaid_lat_raw = recommended_navaid_coordinates.latitude;
-            let recommended_navaid_lon_raw = recommended_navaid_coordinates.longitude;
-
-            let center_waypoint = extract_opt_field(&parts, 30);
-            let center_waypoint_icao_code = center_waypoint.and(waypoint_icao_code);
-            let center_waypoint_coordinates = find_coordinates_with_cache(
-                context.coord_cache,
-                CoordinateSearchType::Center,
-                center_waypoint,
-                center_waypoint_icao_code,
-                Some(context.airport_identifier),
-            );
-            let center_waypoint_lat_raw = center_waypoint_coordinates.latitude;
-            let center_waypoint_lon_raw = center_waypoint_coordinates.longitude;
-            let center_is_airport = type_check(center_waypoint, center_waypoint_icao_code);
-
-            let match_airport_id = Some(context.airport_identifier);
-            let requests = [
-                RefRequest::new(
-                    MatchRequestKind::Waypoint,
-                    waypoint_identifier,
-                    waypoint_latitude_raw,
-                    waypoint_longitude_raw,
-                    waypoint_is_airport,
-                    match_airport_id,
-                ),
-                RefRequest::new(
-                    MatchRequestKind::RecommendedNavaid,
-                    recommended_navaid,
-                    recommended_navaid_lat_raw,
-                    recommended_navaid_lon_raw,
-                    false,
-                    match_airport_id,
-                ),
-                RefRequest::new(
-                    MatchRequestKind::Center,
-                    center_waypoint,
-                    center_waypoint_lat_raw,
-                    center_waypoint_lon_raw,
-                    center_is_airport,
-                    match_airport_id,
-                ),
-            ];
-            let matched_rows = match_ref_requests(context.matcher, context.match_cache, requests);
-            let (waypoint_ref_table, waypoint_latitude, waypoint_longitude) =
-                clone_match_cells(&matched_rows[0]);
-            let (
-                recommended_navaid_ref_table,
-                recommended_navaid_latitude,
-                recommended_navaid_longitude,
-            ) = clone_match_cells(&matched_rows[1]);
-            let (center_waypoint_ref_table, center_waypoint_latitude, center_waypoint_longitude) =
-                clone_match_cells(&matched_rows[2]);
-            let waypoint_id = build_reference_id_cell(
-                &waypoint_ref_table,
-                waypoint_identifier,
-                waypoint_icao_code,
-                context.airport_identifier,
-            );
-            let recommended_id = build_reference_id_cell(
-                &recommended_navaid_ref_table,
-                recommended_navaid,
-                recommended_navaid_icao_code,
-                context.airport_identifier,
-            );
-            let center_id = build_reference_id_cell(
-                &center_waypoint_ref_table,
-                center_waypoint,
-                center_waypoint_icao_code,
-                context.airport_identifier,
-            );
-
-            let mut altitude_description = extract_opt_field(&parts, 22);
-            let altitude1 = parts.get(23).and_then(parse_altitude);
-            let altitude2 = parts.get(24).and_then(parse_altitude);
-            if altitude1.is_some() && altitude2.is_none() && altitude_description.is_none() {
-                altitude_description = Some("@");
-            }
-            let transition_altitude = extract_opt_field(&parts, 25);
-            let arc_radius = parts
-                .get(17)
-                .and_then(|value| convert_divided_by(value, 1000.0));
-            let course = parts
-                .get(20)
-                .and_then(|value| convert_divided_by(value, 10.0));
-            let rho = parts
-                .get(19)
-                .and_then(|value| convert_divided_by(value, 10.0));
-            let theta = parts
-                .get(18)
-                .and_then(|value| convert_divided_by(value, 10.0));
-            let rnp = parts.get(10).and_then(convert_rnp);
-            let route_distance = parts
-                .get(21)
-                .and_then(|value| convert_divided_by(value, 10.0));
-            let speed_limit = extract_opt_field(&parts, 27);
-            let speed_limit_description = extract_opt_field(&parts, 26);
-            let vertical_angle = parts.get(28).and_then(convert_vertical_angle);
-            let course_flag = course.is_some().then_some("M");
-            let distance_time = route_distance.is_some().then_some("D");
-            let row_auth_required = row_requires_authorization(rnp, path_termination);
-            let group_key = needs_grouping
-                .then(|| procedure_identifier.clone())
-                .flatten();
-
-            let row = if context.config.use_iaps_logic {
-                context
-                    .columns
-                    .iter()
-                    .map(|column| match column.as_str() {
-                        "airport_identifier" => context.airport_identifier_cell.clone(),
-                        "altitude_description" => string_cell(altitude_description),
-                        "altitude1" => string_cell(altitude1.clone()),
-                        "altitude2" => string_cell(altitude2.clone()),
-                        "arc_radius" => arc_radius.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "area_code" => context.area_code_cell.clone(),
-                        "authorization_required" => CellValue::None,
-                        "center_waypoint_icao_code" => string_cell(center_waypoint_icao_code),
-                        "center_waypoint_latitude" => center_waypoint_latitude.clone(),
-                        "center_waypoint_longitude" => center_waypoint_longitude.clone(),
-                        "center_waypoint_ref_table" => center_waypoint_ref_table.clone(),
-                        "center_waypoint" => string_cell(center_waypoint),
-                        "course_flag" => string_cell(course_flag),
-                        "course" | "magnetic_course" => {
-                            course.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
-                        "ctl" => context.iaps_leg_type_cell.clone(),
-                        "distance_time" => string_cell(distance_time),
-                        "gnss_fms_indication" => CellValue::None,
-                        "lnav_authorized_sbas" => CellValue::None,
-                        "lnav_level_service_name" => CellValue::None,
-                        "lnav_vnav_authorized_sbas" => CellValue::None,
-                        "lnav_vnav_level_service_name" => CellValue::None,
-                        "path_termination" => string_cell(path_termination),
-                        "procedure_identifier" => string_cell(procedure_identifier.as_deref()),
-                        "recommended_navaid_icao_code" => string_cell(recommended_navaid_icao_code),
-                        "recommended_navaid_latitude" | "recommanded_navaid_latitude" => {
-                            recommended_navaid_latitude.clone()
-                        }
-                        "recommended_navaid_longitude" | "recommanded_navaid_longitude" => {
-                            recommended_navaid_longitude.clone()
-                        }
-                        "recommended_navaid_ref_table" => recommended_navaid_ref_table.clone(),
-                        "recommended_navaid" | "recommanded_navaid" => {
-                            string_cell(recommended_navaid)
-                        }
-                        "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
-                        "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "route_distance_holding_distance_time" => route_distance
-                            .map(CellValue::Float)
-                            .unwrap_or(CellValue::None),
-                        "route_type" => string_cell(route_type),
-                        "seqno" => string_cell(seqno),
-                        "speed_limit_description" => string_cell(speed_limit_description),
-                        "speed_limit" => string_cell(speed_limit),
-                        "theta" => theta.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "transition_altitude" => string_cell(transition_altitude),
-                        "transition_identifier" => string_cell(transition_identifier),
-                        "turn_direction" => string_cell(turn_direction),
-                        "vertical_angle" => vertical_angle
-                            .map(CellValue::Float)
-                            .unwrap_or(CellValue::None),
-                        "waypoint_description_code" => string_cell(waypoint_description_code),
-                        "waypoint_icao_code" => string_cell(waypoint_icao_code),
-                        "waypoint_identifier" => string_cell(waypoint_identifier),
-                        "waypoint_latitude" => waypoint_latitude.clone(),
-                        "waypoint_longitude" => waypoint_longitude.clone(),
-                        "waypoint_ref_table" => waypoint_ref_table.clone(),
-                        "center_id" => center_id.clone(),
-                        "id" => waypoint_id.clone(),
-                        "aircraft_category" => string_cell(Some("J")),
-                        _ => CellValue::None,
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                context
-                    .columns
-                    .iter()
-                    .map(|column| match column.as_str() {
-                        "airport_identifier" => context.airport_identifier_cell.clone(),
-                        "altitude_description" => string_cell(altitude_description),
-                        "altitude1" => string_cell(altitude1.clone()),
-                        "altitude2" => string_cell(altitude2.clone()),
-                        "arc_radius" => arc_radius.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "area_code" => context.area_code_cell.clone(),
-                        "authorization_required" => CellValue::None,
-                        "center_waypoint_icao_code" => string_cell(center_waypoint_icao_code),
-                        "center_waypoint_latitude" => center_waypoint_latitude.clone(),
-                        "center_waypoint_longitude" => center_waypoint_longitude.clone(),
-                        "center_waypoint_ref_table" => center_waypoint_ref_table.clone(),
-                        "center_waypoint" => string_cell(center_waypoint),
-                        "course_flag" => string_cell(course_flag),
-                        "course" | "magnetic_course" => {
-                            course.map(CellValue::Float).unwrap_or(CellValue::None)
-                        }
-                        "distance_time" => string_cell(distance_time),
-                        "path_termination" => string_cell(path_termination),
-                        "procedure_identifier" => string_cell(procedure_identifier.as_deref()),
-                        "recommended_navaid_icao_code" => string_cell(recommended_navaid_icao_code),
-                        "recommended_navaid_latitude" | "recommanded_navaid_latitude" => {
-                            recommended_navaid_latitude.clone()
-                        }
-                        "recommended_navaid_longitude" | "recommanded_navaid_longitude" => {
-                            recommended_navaid_longitude.clone()
-                        }
-                        "recommended_navaid_ref_table" => recommended_navaid_ref_table.clone(),
-                        "recommended_navaid" | "recommanded_navaid" => {
-                            string_cell(recommended_navaid)
-                        }
-                        "recommended_navaid_id" | "recommanded_id" => recommended_id.clone(),
-                        "rho" => rho.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "rnp" => rnp.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "route_distance_holding_distance_time" => route_distance
-                            .map(CellValue::Float)
-                            .unwrap_or(CellValue::None),
-                        "route_type" => string_cell(route_type),
-                        "seqno" => string_cell(seqno),
-                        "speed_limit_description" => string_cell(speed_limit_description),
-                        "speed_limit" => string_cell(speed_limit),
-                        "theta" => theta.map(CellValue::Float).unwrap_or(CellValue::None),
-                        "transition_altitude" => string_cell(transition_altitude),
-                        "transition_identifier" => string_cell(transition_identifier),
-                        "turn_direction" => string_cell(turn_direction),
-                        "vertical_angle" => vertical_angle
-                            .map(CellValue::Float)
-                            .unwrap_or(CellValue::None),
-                        "waypoint_description_code" => string_cell(waypoint_description_code),
-                        "waypoint_icao_code" => string_cell(waypoint_icao_code),
-                        "waypoint_identifier" => string_cell(waypoint_identifier),
-                        "waypoint_latitude" => waypoint_latitude.clone(),
-                        "waypoint_longitude" => waypoint_longitude.clone(),
-                        "waypoint_ref_table" => waypoint_ref_table.clone(),
-                        "center_id" => center_id.clone(),
-                        "id" => waypoint_id.clone(),
-                        "aircraft_category" => string_cell(Some("J")),
-                        _ => CellValue::None,
-                    })
-                    .collect::<Vec<_>>()
-            }
-            .into_boxed_slice();
+            let row = build_terminal_record_row(context, &row_fields, &matched_cells);
 
             if needs_grouping {
+                let group_key = row_fields.group_key.clone();
                 let group =
                     grouped_records
                         .entry(group_key)
@@ -1071,10 +1082,10 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                             auth_required: false,
                             rows: Vec::new(),
                         });
-                group.auth_required |= row_auth_required;
+                group.auth_required |= row_fields.row_auth_required;
                 group.rows.push(row);
             } else {
-                batch_records.push(row);
+                context.batch_records.push(row);
             }
             total_processed += 1;
             Ok(())
@@ -1090,7 +1101,7 @@ fn build_terminal_cifp_records_with_matcher<R: BufRead>(
                     }
                 }
             }
-            batch_records.extend(group.rows);
+            context.batch_records.extend(group.rows);
         }
     }
 
@@ -1148,10 +1159,14 @@ fn load_terminal_matchers(
     let db_path = db_path.to_owned();
     let matcher_required_identifiers = Arc::clone(&required_identifiers);
     let coord_handle = thread::spawn(move || {
-        get_shared_coordinate_cache(earth_fix_path, earth_nav_path, Some(required_identifiers))
+        get_shared_coordinate_cache(
+            earth_fix_path.as_deref(),
+            earth_nav_path.as_deref(),
+            Some(&required_identifiers),
+        )
     });
     let matcher_handle = thread::spawn(move || {
-        get_shared_ref_matcher(&db_path, timeout, Some(matcher_required_identifiers))
+        get_shared_ref_matcher(&db_path, timeout, Some(&matcher_required_identifiers))
     });
 
     let coord_cache = coord_handle
@@ -1263,7 +1278,7 @@ fn convert_terminal_cifp_to_db(
     Ok((airport_files.len(), total_processed))
 }
 
-pub(crate) fn process_terminal_cifp_to_db(
+pub fn process_terminal_cifp_to_db(
     source_dat_directory: &str,
     earth_fix_path: Option<String>,
     earth_nav_path: Option<String>,
@@ -1284,7 +1299,7 @@ pub(crate) fn process_terminal_cifp_to_db(
         timeout,
         required_identifiers,
     )?;
-    let shared_conn = get_shared_connection(db_path)?;
+    let shared_conn = get_shared_connection(db_path);
     let owns_connection = shared_conn.is_none();
     let conn = match shared_conn {
         Some(conn) => conn,

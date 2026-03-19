@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_DB_A: &str = concat!(
     r"C:\Users\Yin_Yizhao\AppData\Local\Packages\Microsoft.Limitless_8wekyb3d8bbwe",
-    r"\LocalState\WASM\MSFS2024\inibuilds-aircraft-a340\work\NavigationData\db.s3db"
+    r"\LocalState\WASM\MSFS2024\pmdg-aircraft-77er\work\NavigationData\e_dfd_PMDG.s3db"
 );
-const DEFAULT_DB_B: &str = r"E:\yyz\Downloads\db.s3db";
+const DEFAULT_DB_B: &str = r"E:\yyz\Downloads\e_dfd_PMDG.s3db";
 const MAX_SCHEMA_DIFF_LINES: usize = 200;
 
 #[derive(Parser, Debug)]
@@ -399,67 +399,125 @@ fn count_rows(conn: &Connection, schema: &str, table: &str) -> Result<i64> {
 }
 
 fn configured_normalization_digits(table: &str, column_name: &str) -> Option<u32> {
-    match table {
-        "tbl_pa_airports" => match column_name {
+    if table_name_matches(table, "tbl_airports") {
+        return match column_name {
             "airport_ref_latitude" | "airport_ref_longitude" => Some(8),
             _ => None,
-        },
-        "tbl_db_enroute_ndbnavaids" => match column_name {
-            "navaid_latitude" | "navaid_longitude" => Some(8),
-            _ => None,
-        },
-        "tbl_d_vhfnavaids" => match column_name {
-            "dme_latitude" | "dme_longitude" | "navaid_latitude" | "navaid_longitude" => Some(8),
-            _ => None,
-        },
-        "tbl_ea_enroute_waypoints" | "tbl_er_enroute_airways" | "tbl_pc_terminal_waypoints" => {
-            match column_name {
-                "waypoint_latitude" | "waypoint_longitude" => Some(8),
-                _ => None,
+        };
+    }
+
+    if table_name_matches(table, "tbl_enroute_ndbnavaids") {
+        return match column_name {
+            "ndb_latitude" | "ndb_longitude" | "navaid_latitude" | "navaid_longitude" => {
+                Some(8)
             }
-        }
-        "tbl_pd_sids" | "tbl_pe_stars" | "tbl_pf_iaps" => match column_name {
+            _ => None,
+        };
+    }
+
+    if table_name_matches(table, "tbl_vhfnavaids") {
+        return match column_name {
+            "dme_latitude" | "dme_longitude" | "vor_latitude" | "vor_longitude"
+            | "navaid_latitude" | "navaid_longitude" => Some(8),
+            _ => None,
+        };
+    }
+
+    if table_name_matches(table, "tbl_enroute_waypoints")
+        || table_name_matches(table, "tbl_enroute_airways")
+        || table_name_matches(table, "tbl_terminal_waypoints")
+    {
+        return match column_name {
+            "waypoint_latitude" | "waypoint_longitude" => Some(8),
+            _ => None,
+        };
+    }
+
+    if table_name_matches(table, "tbl_sids")
+        || table_name_matches(table, "tbl_stars")
+        || table_name_matches(table, "tbl_iaps")
+    {
+        return match column_name {
             "center_waypoint_latitude"
             | "center_waypoint_longitude"
             | "recommended_navaid_latitude"
             | "recommended_navaid_longitude"
+            | "recommanded_navaid_latitude"
+            | "recommanded_navaid_longitude"
             | "waypoint_latitude"
             | "waypoint_longitude" => Some(8),
             _ => None,
-        },
-        "tbl_pi_localizers_glideslopes" => match column_name {
+        };
+    }
+
+    if table_name_matches(table, "tbl_localizers_glideslopes") {
+        return match column_name {
             "gs_latitude" | "gs_longitude" | "llz_latitude" | "llz_longitude" => Some(8),
             _ => None,
-        },
-        _ => None,
+        };
     }
+
+    None
 }
 
 fn configured_tolerance(table: &str, column_name: &str) -> Option<f64> {
-    match table {
-        "tbl_db_enroute_ndbnavaids" => match column_name {
+    if table_name_matches(table, "tbl_enroute_ndbnavaids") {
+        return match column_name {
             "magnetic_variation" => Some(0.5),
             _ => None,
-        },
-        "tbl_d_vhfnavaids" => match column_name {
+        };
+    }
+
+    if table_name_matches(table, "tbl_vhfnavaids") {
+        return match column_name {
             "magnetic_variation" | "station_declination" => Some(0.5),
             _ => None,
-        },
-        "tbl_ea_enroute_waypoints" | "tbl_pc_terminal_waypoints" => match column_name {
+        };
+    }
+
+    if table_name_matches(table, "tbl_enroute_waypoints")
+        || table_name_matches(table, "tbl_terminal_waypoints")
+    {
+        return match column_name {
             "magnetic_variation" => Some(0.5),
             _ => None,
-        },
-        "tbl_er_enroute_airways" => match column_name {
+        };
+    }
+
+    if table_name_matches(table, "tbl_enroute_airways") {
+        return match column_name {
             "inbound_course" | "outbound_course" => Some(1.0),
             _ => None,
-        },
-        "tbl_pi_localizers_glideslopes" => match column_name {
+        };
+    }
+
+    if table_name_matches(table, "tbl_localizers_glideslopes") {
+        return match column_name {
             "llz_bearing" => Some(1.0),
             "station_declination" => Some(0.5),
             _ => None,
-        },
-        _ => None,
+        };
     }
+
+    None
+}
+
+fn table_name_matches(table_name: &str, canonical_name: &str) -> bool {
+    if table_name == canonical_name {
+        return true;
+    }
+
+    let Some(name_body) = table_name.strip_prefix("tbl_") else {
+        return false;
+    };
+    let Some(canonical_body) = canonical_name.strip_prefix("tbl_") else {
+        return false;
+    };
+    let Some((legacy_prefix, remainder)) = name_body.split_once('_') else {
+        return false;
+    };
+
+    legacy_prefix.len() <= 2 && remainder == canonical_body
 }
 
 fn comparison_normalizations(table: &str, columns: &[ColumnInfo]) -> HashMap<usize, u32> {
@@ -958,6 +1016,54 @@ mod tests {
         assert_eq!(diff.groups_only_in_a, Some(0));
         assert_eq!(diff.groups_only_in_b, Some(0));
         assert!(!diff.has_difference());
+    }
+
+    #[test]
+    fn compare_table_uses_tolerance_for_pmdg_table_name() {
+        let conn = setup_compare_conn();
+        let create_sql_main = "\
+            CREATE TABLE tbl_terminal_waypoints (
+                region_code TEXT,
+                waypoint_identifier TEXT,
+                waypoint_latitude REAL,
+                waypoint_longitude REAL,
+                magnetic_variation REAL
+            )";
+        let create_sql_attached = "\
+            CREATE TABLE db_b.tbl_terminal_waypoints (
+                region_code TEXT,
+                waypoint_identifier TEXT,
+                waypoint_latitude REAL,
+                waypoint_longitude REAL,
+                magnetic_variation REAL
+            )";
+        conn.execute(create_sql_main, []).unwrap();
+        conn.execute(create_sql_attached, []).unwrap();
+
+        conn.execute(
+            "INSERT INTO tbl_terminal_waypoints VALUES ('ZB', 'FIX01', 30.123456781, 120.987654321, 1.0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO db_b.tbl_terminal_waypoints VALUES ('ZB', 'FIX01', 30.123456784, 120.987654324, 1.1)",
+            [],
+        )
+        .unwrap();
+
+        let diff = compare_table(&conn, "tbl_terminal_waypoints", 5, false).unwrap();
+        assert!(!diff.schema_changed);
+        assert_eq!(diff.groups_only_in_a, Some(0));
+        assert_eq!(diff.groups_only_in_b, Some(0));
+        assert!(!diff.has_difference());
+    }
+
+    #[test]
+    fn table_name_match_supports_legacy_prefix() {
+        assert!(table_name_matches("tbl_terminal_waypoints", "tbl_terminal_waypoints"));
+        assert!(table_name_matches("tbl_pc_terminal_waypoints", "tbl_terminal_waypoints"));
+        assert!(table_name_matches("tbl_db_enroute_ndbnavaids", "tbl_enroute_ndbnavaids"));
+        assert!(!table_name_matches("tbl_xyz_terminal_waypoints", "tbl_terminal_waypoints"));
     }
 
     #[test]

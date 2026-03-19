@@ -29,7 +29,7 @@ impl TerminalWaypointRecord {
         lat: f64,
         lon: f64,
     ) -> Self {
-        let id = format!("{}{}{}", region_code, icao_code, waypoint_identifier);
+        let id = format!("{region_code}{icao_code}{waypoint_identifier}");
         Self {
             area_code: "EEU".to_string(),
             icao_code,
@@ -64,9 +64,7 @@ fn fetch_existing_pairs(
     for batch in unique_pairs.chunks(actual_batch_size) {
         let placeholders = vec!["(?,?)"; batch.len()].join(",");
         let query = format!(
-            "SELECT region_code, waypoint_identifier FROM {} WHERE (region_code, waypoint_identifier) IN ({})",
-            table_name,
-            placeholders
+            "SELECT region_code, waypoint_identifier FROM {table_name} WHERE (region_code, waypoint_identifier) IN ({placeholders})"
         );
         let params = batch
             .iter()
@@ -96,8 +94,7 @@ fn ensure_terminal_waypoints_index_native(
     table_name: &str,
 ) -> Result<()> {
     let sql = format!(
-        "CREATE INDEX IF NOT EXISTS idx_{}_region_identifier ON {}(region_code, waypoint_identifier)",
-        table_name, table_name
+        "CREATE INDEX IF NOT EXISTS idx_{table_name}_region_identifier ON {table_name}(region_code, waypoint_identifier)"
     );
     conn.execute_statement_native(&sql, &[])?;
     Ok(())
@@ -106,8 +103,7 @@ fn ensure_terminal_waypoints_index_native(
 fn build_insert_sql(table_name: &str) -> Result<String> {
     if table_name != "tbl_terminal_waypoints" {
         return Err(anyhow!(
-            "unsupported terminal waypoint table: {}",
-            table_name
+            "unsupported terminal waypoint table: {table_name}"
         ));
     }
     Ok("INSERT OR IGNORE INTO tbl_terminal_waypoints (area_code, region_code, icao_code, waypoint_identifier, waypoint_name, waypoint_type, waypoint_latitude, waypoint_longitude, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)".to_string())
@@ -172,7 +168,7 @@ fn convert_terminal_waypoints_file_to_db(
     ensure_terminal_waypoints_index_native(conn, table_name)?;
 
     let parsed = parse_terminal_waypoints_file(file_path)
-        .map_err(|err| anyhow!("parse_terminal_waypoints_file failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_terminal_waypoints_file failed: {err}"))?;
     let parsed_count = parsed.len();
     let records: Vec<TerminalWaypointRecord> = parsed
         .into_iter()
@@ -237,7 +233,7 @@ fn convert_terminal_waypoints_file_to_db(
     Ok((parsed_count, new_count))
 }
 
-pub(crate) fn process_terminal_waypoints_file_to_db(
+pub fn process_terminal_waypoints_file_to_db(
     file_path: &str,
     db_path: &str,
     table_name: &str,
@@ -245,7 +241,7 @@ pub(crate) fn process_terminal_waypoints_file_to_db(
     query_batch_size: usize,
     insert_batch_size: usize,
 ) -> Result<(usize, usize)> {
-    let shared_conn = get_shared_connection(db_path)?;
+    let shared_conn = get_shared_connection(db_path);
     let owns_connection = shared_conn.is_none();
     let conn = match shared_conn {
         Some(conn) => conn,

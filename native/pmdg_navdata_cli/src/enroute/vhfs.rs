@@ -4,6 +4,7 @@ use crate::core::parsers::parse_vhf_nav_file;
 use anyhow::{anyhow, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
 use encoding_rs::Encoding;
+use num_traits::ToPrimitive;
 use pinyin::ToPinyin;
 use rusqlite::types::Value as SqlValue;
 use std::collections::{HashMap, HashSet};
@@ -34,6 +35,20 @@ struct VhfInsertRow {
     id: String,
 }
 
+type VhfParsedRow = (
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    f64,
+    String,
+    f64,
+    f64,
+    f64,
+    String,
+    bool,
+);
+
 fn area_code_for_icao(icao_code: &str) -> &'static str {
     match icao_code {
         "VH" => "PAC",
@@ -41,24 +56,34 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql() -> &'static str {
+const fn build_insert_sql() -> &'static str {
     "INSERT OR IGNORE INTO tbl_vhfnavaids (area_code, airport_identifier, icao_code, vor_identifier, vor_name, vor_frequency, navaid_class, vor_latitude, vor_longitude, dme_ident, dme_latitude, dme_longitude, dme_elevation, ilsdme_bias, range, station_declination, magnetic_variation, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn python_round(value: f64) -> i64 {
     let rounded = value.round();
-    if (value - rounded).abs() != 0.5 {
-        return rounded as i64;
+    if ((value - rounded).abs() - 0.5).abs() > 1e-12 {
+        return rounded
+            .to_i64()
+            .unwrap_or_else(|| if rounded.is_sign_negative() { i64::MIN } else { i64::MAX });
     }
 
-    let lower = value.floor() as i64;
-    let upper = value.ceil() as i64;
+    let lower = value
+        .floor()
+        .to_i64()
+        .unwrap_or_else(|| if value.is_sign_negative() { i64::MIN } else { i64::MAX });
+    let upper = value
+        .ceil()
+        .to_i64()
+        .unwrap_or_else(|| if value.is_sign_negative() { i64::MIN } else { i64::MAX });
     if lower % 2 == 0 {
         lower
     } else if upper % 2 == 0 {
         upper
     } else {
-        rounded as i64
+        rounded
+            .to_i64()
+            .unwrap_or_else(|| if rounded.is_sign_negative() { i64::MIN } else { i64::MAX })
     }
 }
 
@@ -81,7 +106,7 @@ fn required_index(headers: &StringRecord, column: &str) -> Result<usize> {
     headers
         .iter()
         .position(|value| value == column)
-        .ok_or_else(|| anyhow!("required navaid CSV column missing: {}", column))
+        .ok_or_else(|| anyhow!("required navaid CSV column missing: {column}"))
 }
 
 fn optional_index(headers: &StringRecord, column: &str) -> Option<usize> {
@@ -111,7 +136,7 @@ fn load_navaid_mapping_from_csv(
         Ok(bytes) => bytes,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
         Err(err) => {
-            return Err(anyhow!("failed to read {}: {}", csv_path, err));
+            return Err(anyhow!("failed to read {csv_path}: {err}"));
         }
     };
     let content = decode_gb18030_bytes(&bytes)?;
@@ -122,13 +147,13 @@ fn load_navaid_mapping_from_csv(
         .from_reader(content.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| anyhow!("failed to read navaid CSV headers: {}", err))?
+        .map_err(|err| anyhow!("failed to read navaid CSV headers: {err}"))?
         .clone();
     let code_id_idx = required_index(&headers, "CODE_ID")?;
     let txt_name_idx = optional_index(&headers, "TXT_NAME");
 
     for record in reader.records() {
-        let record = record.map_err(|err| anyhow!("failed to parse navaid CSV row: {}", err))?;
+        let record = record.map_err(|err| anyhow!("failed to parse navaid CSV row: {err}"))?;
         let Some(code_id) = record
             .get(code_id_idx)
             .map(str::trim)
@@ -163,8 +188,7 @@ fn fetch_existing_pairs_for_keys(
     for chunk in keys.chunks(effective_batch) {
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
-            "SELECT vor_identifier, icao_code FROM {} WHERE (vor_identifier, icao_code) IN ({})",
-            table_name, placeholders
+            "SELECT vor_identifier, icao_code FROM {table_name} WHERE (vor_identifier, icao_code) IN ({placeholders})"
         );
         let params = chunk
             .iter()
@@ -255,85 +279,42 @@ fn insert_rows(
     Ok(())
 }
 
-pub(crate) fn process_vhfs_to_db(
-    file_path: &str,
-    vor_csv_path: &str,
-    ndb_csv_path: &str,
-    conn: &RustSqliteConnection,
-) -> Result<usize> {
+fn ensure_vhf_table(conn: &RustSqliteConnection) -> Result<()> {
     conn.execute_statement_native(
-            "\n            CREATE TABLE IF NOT EXISTS tbl_vhfnavaids (\n                airport_identifier TEXT,\n                area_code TEXT,\n                icao_code TEXT,\n                vor_identifier TEXT,\n                vor_name TEXT,\n                vor_frequency REAL,\n                navaid_class TEXT,\n                vor_latitude REAL,\n                vor_longitude REAL,\n                dme_ident TEXT,\n                dme_latitude REAL,\n                dme_longitude REAL,\n                dme_elevation REAL,\n                ilsdme_bias TEXT,\n                range TEXT,\n                station_declination REAL,\n                magnetic_variation REAL,\n                id TEXT\n            )\n        ",
-            &[],
-        )
-        .map_err(sqlite_error)?;
-    let parsed_rows = parse_vhf_nav_file(file_path)
-        .map_err(|err| anyhow!("parse_vhf_nav_file failed: {}", err))?;
-    let unique_pairs = parsed_rows
-        .iter()
-        .map(
-            |(_, icao_code, navaid_identifier, _, _, _, _, _, _, _, _)| {
-                (navaid_identifier.clone(), icao_code.clone())
-            },
-        )
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let existing_pairs = fetch_existing_pairs_for_keys(conn, VHFS_TABLE, &unique_pairs, 500)
-        .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
+        "\n            CREATE TABLE IF NOT EXISTS tbl_vhfnavaids (\n                airport_identifier TEXT,\n                area_code TEXT,\n                icao_code TEXT,\n                vor_identifier TEXT,\n                vor_name TEXT,\n                vor_frequency REAL,\n                navaid_class TEXT,\n                vor_latitude REAL,\n                vor_longitude REAL,\n                dme_ident TEXT,\n                dme_latitude REAL,\n                dme_longitude REAL,\n                dme_elevation REAL,\n                ilsdme_bias TEXT,\n                range TEXT,\n                station_declination REAL,\n                magnetic_variation REAL,\n                id TEXT\n            )\n        ",
+        &[],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
 
-    let mut navaid_mapping = HashMap::new();
-    load_navaid_mapping_from_csv(vor_csv_path, &mut navaid_mapping)
-        .map_err(|err| anyhow!("load_navaid_mapping_from_csv failed for VOR.csv: {}", err))?;
-    load_navaid_mapping_from_csv(ndb_csv_path, &mut navaid_mapping)
-        .map_err(|err| anyhow!("load_navaid_mapping_from_csv failed for NDB.csv: {}", err))?;
-
+fn collect_pending_rows(
+    parsed_rows: Vec<VhfParsedRow>,
+    existing_pairs: &HashSet<(String, String)>,
+) -> (Vec<VhfParsedRow>, Vec<(f64, f64)>) {
     let mut seen_keys = HashSet::new();
     let mut coordinates = Vec::new();
     let mut pending_rows = Vec::new();
 
-    for (
-        airport_identifier,
-        icao_code,
-        navaid_identifier,
-        navaid_name,
-        navaid_frequency,
-        navaid_class,
-        navaid_latitude,
-        navaid_longitude,
-        dme_elevation,
-        nav_range,
-        has_dme_ident,
-    ) in parsed_rows
-    {
-        let key = (navaid_identifier.clone(), icao_code.clone());
+    for row in parsed_rows {
+        let key = (row.2.clone(), row.1.clone());
         if existing_pairs.contains(&key) || !seen_keys.insert(key) {
             continue;
         }
 
-        coordinates.push((navaid_latitude, navaid_longitude));
-        pending_rows.push((
-            airport_identifier,
-            icao_code,
-            navaid_identifier,
-            navaid_name,
-            navaid_frequency,
-            navaid_class,
-            navaid_latitude,
-            navaid_longitude,
-            dme_elevation,
-            nav_range,
-            has_dme_ident,
-        ));
+        coordinates.push((row.6, row.7));
+        pending_rows.push(row);
     }
 
-    if pending_rows.is_empty() {
-        return Ok(0);
-    }
+    (pending_rows, coordinates)
+}
 
-    let magnetic_variations = batch_get_magnetic_variations_internal(&coordinates)
-        .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {}", err))?;
-
-    let rows: Vec<VhfInsertRow> = pending_rows
+fn build_vhf_insert_rows(
+    pending_rows: Vec<VhfParsedRow>,
+    magnetic_variations: &[f64],
+    navaid_mapping: &HashMap<String, String>,
+) -> Vec<VhfInsertRow> {
+    pending_rows
         .into_iter()
         .enumerate()
         .map(
@@ -353,14 +334,13 @@ pub(crate) fn process_vhfs_to_db(
                     has_dme_ident,
                 ),
             )| {
-                let current_magnetic_variation =
-                    magnetic_variations.get(index).copied().unwrap_or(0.0);
+                let current_magnetic_variation = magnetic_variations.get(index).copied().unwrap_or(0.0);
                 let station_declination = if navaid_class == "VDHW " {
                     Some(python_round(current_magnetic_variation))
                 } else {
                     None
                 };
-                let id = format!("{}{}", icao_code, navaid_identifier);
+                let id = format!("{icao_code}{navaid_identifier}");
                 VhfInsertRow {
                     airport_identifier,
                     area_code: area_code_for_icao(&icao_code).to_string(),
@@ -388,15 +368,55 @@ pub(crate) fn process_vhfs_to_db(
                 }
             },
         )
-        .collect();
+        .collect::<Vec<_>>()
+}
+
+pub fn process_vhfs_to_db(
+    file_path: &str,
+    vor_csv_path: &str,
+    ndb_csv_path: &str,
+    conn: &RustSqliteConnection,
+) -> Result<usize> {
+    ensure_vhf_table(conn)?;
+    let parsed_rows = parse_vhf_nav_file(file_path)
+        .map_err(|err| anyhow!("parse_vhf_nav_file failed: {err}"))?;
+    let unique_pairs = parsed_rows
+        .iter()
+        .map(
+            |(_, icao_code, navaid_identifier, _, _, _, _, _, _, _, _)| {
+                (navaid_identifier.clone(), icao_code.clone())
+            },
+        )
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let existing_pairs = fetch_existing_pairs_for_keys(conn, VHFS_TABLE, &unique_pairs, 500)
+        .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {err}"))?;
+
+    let mut navaid_mapping = HashMap::new();
+    load_navaid_mapping_from_csv(vor_csv_path, &mut navaid_mapping)
+        .map_err(|err| anyhow!("load_navaid_mapping_from_csv failed for VOR.csv: {err}"))?;
+    load_navaid_mapping_from_csv(ndb_csv_path, &mut navaid_mapping)
+        .map_err(|err| anyhow!("load_navaid_mapping_from_csv failed for NDB.csv: {err}"))?;
+
+    let (pending_rows, coordinates) = collect_pending_rows(parsed_rows, &existing_pairs);
+
+    if pending_rows.is_empty() {
+        return Ok(0);
+    }
+
+    let magnetic_variations = batch_get_magnetic_variations_internal(&coordinates)
+        .map_err(|err| anyhow!("batch_get_magnetic_variations_internal failed: {err}"))?;
+
+    let rows = build_vhf_insert_rows(pending_rows, &magnetic_variations, &navaid_mapping);
 
     insert_rows(conn, &rows, &magnetic_variations)
-        .map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("insert_rows failed: {err}"))?;
     Ok(rows.len())
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }
 
 #[cfg(test)]

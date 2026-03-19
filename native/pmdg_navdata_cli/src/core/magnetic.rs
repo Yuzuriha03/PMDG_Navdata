@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use num_traits::ToPrimitive;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ const BLACKOUT_ZONE: f64 = 2000.0;
 const CAUTION_ZONE: f64 = 6000.0;
 
 const WGS84_A: f64 = 6378.137;
-const WGS84_B: f64 = 6356.7523142;
+const WGS84_B: f64 = 6_356.752_314_2;
 const WGS84_RE: f64 = 6371.2;
 
 #[derive(Clone)]
@@ -36,6 +37,14 @@ struct GeoMag {
 struct GeoMagResult {
     d: f64,
     h: f64,
+}
+
+struct GeoMagFrame {
+    ct: f64,
+    st: f64,
+    ca: f64,
+    sa: f64,
+    aor: f64,
 }
 
 struct GeoMagScratch {
@@ -82,12 +91,12 @@ impl ThreadLocalGeoMagState {
 
 impl GeoMag {
     #[inline]
-    fn coeff_idx(m: usize, n: usize) -> usize {
+    const fn coeff_idx(m: usize, n: usize) -> usize {
         m * WMM_MAX_SIZE + n
     }
 
     #[inline]
-    fn p_idx(&self, n: usize, m: usize) -> usize {
+    const fn p_idx(&self, n: usize, m: usize) -> usize {
         n + m * self.size
     }
 
@@ -150,10 +159,10 @@ impl GeoMag {
             let hnm = parts[3]
                 .parse::<f64>()
                 .with_context(|| format!("invalid hnm: {}", parts[3]))?;
-            let dgnm = parts[4]
+            let secular_primary_coeff = parts[4]
                 .parse::<f64>()
                 .with_context(|| format!("invalid dgnm: {}", parts[4]))?;
-            let dhnm = parts[5]
+            let secular_secondary_coeff = parts[5]
                 .parse::<f64>()
                 .with_context(|| format!("invalid dhnm: {}", parts[5]))?;
 
@@ -161,14 +170,14 @@ impl GeoMag {
                 break;
             }
             if m > n || n >= self.size || m >= self.size {
-                return Err(anyhow!("corrupt coefficient record (n={}, m={})", n, m));
+                return Err(anyhow!("corrupt coefficient record (n={n}, m={m})"));
             }
 
             self.c[Self::coeff_idx(m, n)] = gnm;
-            self.cd[Self::coeff_idx(m, n)] = dgnm;
+            self.cd[Self::coeff_idx(m, n)] = secular_primary_coeff;
             if m != 0 {
                 self.c[Self::coeff_idx(n, m - 1)] = hnm;
-                self.cd[Self::coeff_idx(n, m - 1)] = dhnm;
+                self.cd[Self::coeff_idx(n, m - 1)] = secular_secondary_coeff;
             }
         }
 
@@ -182,15 +191,19 @@ impl GeoMag {
         self.fm_values[0] = 0.0;
 
         for n in 1..=self.maxord {
-            snorm[n] = snorm[n - 1] * (2 * n - 1) as f64 / n as f64;
+            let numerator = (2 * n - 1).to_f64().unwrap_or(f64::MAX);
+            let denominator = n.to_f64().unwrap_or(1.0);
+            snorm[n] = snorm[n - 1] * numerator / denominator;
             let mut j = 2_u32;
             for m in 0..=n {
-                let n_f = n as f64;
-                let m_f = m as f64;
+                let n_f = n.to_f64().unwrap_or(f64::MAX);
+                let m_f = m.to_f64().unwrap_or(f64::MAX);
                 self.k[Self::coeff_idx(m, n)] =
-                    ((n_f - 1.0).powi(2) - m_f.powi(2)) / ((2.0 * n_f - 1.0) * (2.0 * n_f - 3.0));
+                    m_f.mul_add(-m_f, (n_f - 1.0).powi(2)) / (2.0f64.mul_add(n_f, -1.0) * 2.0f64.mul_add(n_f, -3.0));
                 if m > 0 {
-                    let flnmj = ((n - m + 1) * j as usize) as f64 / (n + m) as f64;
+                    let j_usize = usize::try_from(j).unwrap_or(usize::MAX);
+                    let flnmj = ((n - m + 1) * j_usize).to_f64().unwrap_or(f64::MAX)
+                        / (n + m).to_f64().unwrap_or(1.0);
                     let idx = self.p_idx(n, m);
                     let prev_idx = self.p_idx(n, m - 1);
                     snorm[idx] = snorm[prev_idx] * flnmj.sqrt();
@@ -202,11 +215,85 @@ impl GeoMag {
                 self.c[Self::coeff_idx(m, n)] *= snorm[idx];
                 self.cd[Self::coeff_idx(m, n)] *= snorm[idx];
             }
-            self.fn_values[n] = (n + 1) as f64;
-            self.fm_values[n] = n as f64;
+            self.fn_values[n] = (n + 1).to_f64().unwrap_or(f64::MAX);
+            self.fm_values[n] = n.to_f64().unwrap_or(f64::MAX);
         }
 
         self.k[Self::coeff_idx(1, 1)] = 0.0;
+    }
+
+    fn initialize_frame(
+        &self,
+        glat: f64,
+        glon: f64,
+        alt: f64,
+        sp: &mut [f64],
+        cp: &mut [f64],
+    ) -> GeoMagFrame {
+        let semi_major_axis = WGS84_A;
+        let semi_minor_axis = WGS84_B;
+        let re = WGS84_RE;
+        let a2 = semi_major_axis * semi_major_axis;
+        let b2 = semi_minor_axis * semi_minor_axis;
+        let c2 = a2 - b2;
+        let a4 = a2 * a2;
+        let b4 = b2 * b2;
+        let c4 = a4 - b4;
+
+        let rlon = glon.to_radians();
+        let rlat = glat.to_radians();
+        let srlon = rlon.sin();
+        let srlat = rlat.sin();
+        let crlon = rlon.cos();
+        let crlat = rlat.cos();
+        let srlat2 = srlat * srlat;
+        let crlat2 = crlat * crlat;
+
+        sp[1] = srlon;
+        cp[1] = crlon;
+
+        let geocentric_q = c2.mul_add(-srlat2, a2).sqrt();
+        let q1 = alt * geocentric_q;
+        let ratio = (q1 + a2) / (q1 + b2);
+        let q2 = ratio * ratio;
+        let ct = srlat / q2.mul_add(crlat2, srlat2).sqrt();
+        let st = ct.mul_add(-ct, 1.0).sqrt();
+        let r2 = alt.mul_add(alt, 2.0 * q1) + c4.mul_add(-srlat2, a4) / (geocentric_q * geocentric_q);
+        let earth_radius = r2.sqrt();
+        let surface_radius = a2.mul_add(crlat2, b2 * srlat2).sqrt();
+        let ca = (alt + surface_radius) / earth_radius;
+        let sa = c2 * crlat * srlat / (earth_radius * surface_radius);
+
+        for m in 2..=self.maxord {
+            sp[m] = sp[1].mul_add(cp[m - 1], cp[1] * sp[m - 1]);
+            cp[m] = cp[1].mul_add(cp[m - 1], -(sp[1] * sp[m - 1]));
+        }
+
+        GeoMagFrame {
+            ct,
+            st,
+            ca,
+            sa,
+            aor: re / earth_radius,
+        }
+    }
+
+    fn finalize_result(bt: f64, br: f64, bp: f64, ca: f64, sa: f64) -> Result<GeoMagResult> {
+        let bx = (-bt).mul_add(ca, -(br * sa));
+        let by = bp;
+        let bh = bx.hypot(by);
+        let result = GeoMagResult {
+            d: by.atan2(bx).to_degrees(),
+            h: bh,
+        };
+
+        if result.h < BLACKOUT_ZONE {
+            return Err(anyhow!("in blackout zone (H={:.1})", result.h));
+        }
+        if result.h < CAUTION_ZONE {
+            // Keep behavior compatible with previous path where warning zone did not error out.
+        }
+        Ok(result)
     }
 
     fn calculate(
@@ -222,65 +309,23 @@ impl GeoMag {
             return Err(anyhow!("time extends beyond model 5-year life span"));
         }
 
-        let mut result = GeoMagResult::default();
-
-        let a = WGS84_A;
-        let b = WGS84_B;
-        let re = WGS84_RE;
-        let a2 = a * a;
-        let b2 = b * b;
-        let c2 = a2 - b2;
-        let a4 = a2 * a2;
-        let b4 = b2 * b2;
-        let c4 = a4 - b4;
-
         scratch.prepare();
         let dp = &mut scratch.dp;
         let sp = &mut scratch.sp;
         let cp = &mut scratch.cp;
         let pp = &mut scratch.pp;
-        let p = &mut scratch.p;
+        let legendre = &mut scratch.p;
         let size = self.size;
         let coeff_stride = WMM_MAX_SIZE;
-
-        let rlon = glon.to_radians();
-        let rlat = glat.to_radians();
-        let srlon = rlon.sin();
-        let srlat = rlat.sin();
-        let crlon = rlon.cos();
-        let crlat = rlat.cos();
-        let srlat2 = srlat * srlat;
-        let crlat2 = crlat * crlat;
-
-        sp[1] = srlon;
-        cp[1] = crlon;
-
-        let q = (a2 - c2 * srlat2).sqrt();
-        let q1 = alt * q;
-        let ratio = (q1 + a2) / (q1 + b2);
-        let q2 = ratio * ratio;
-        let ct = srlat / (q2 * crlat2 + srlat2).sqrt();
-        let st = (1.0 - ct * ct).sqrt();
-        let r2 = alt * alt + 2.0 * q1 + (a4 - c4 * srlat2) / (q * q);
-        let r = r2.sqrt();
-        let d = (a2 * crlat2 + b2 * srlat2).sqrt();
-        let ca = (alt + d) / r;
-        let sa = c2 * crlat * srlat / (r * d);
-
-        for m in 2..=self.maxord {
-            sp[m] = sp[1] * cp[m - 1] + cp[1] * sp[m - 1];
-            cp[m] = cp[1] * cp[m - 1] - sp[1] * sp[m - 1];
-        }
-
-        let aor = re / r;
-        let mut ar = aor * aor;
+        let frame = self.initialize_frame(glat, glon, alt, sp, cp);
+        let mut ar = frame.aor * frame.aor;
         let mut br = 0.0;
         let mut bt = 0.0;
         let mut bp = 0.0;
         let mut bpp = 0.0;
 
         for n in 1..=self.maxord {
-            ar *= aor;
+            ar *= frame.aor;
             let fn_n = self.fn_values[n];
             for m in 0..=n {
                 let coeff_m_base = m * coeff_stride;
@@ -292,37 +337,36 @@ impl GeoMag {
 
                 if n == m {
                     let prev_diag = (m - 1) * size + (n - 1);
-                    let prev_diag_value = p[prev_diag];
+                    let prev_diag_value = legendre[prev_diag];
                     let dp_prev_diag = dp[(m - 1) * coeff_stride + (n - 1)];
-                    p_mn_value = st * prev_diag_value;
-                    dp_mn = st * dp_prev_diag + ct * prev_diag_value;
-                    p[p_mn] = p_mn_value;
-                    dp[coeff_mn] = dp_mn;
+                    p_mn_value = frame.st * prev_diag_value;
+                    dp_mn = frame.st.mul_add(dp_prev_diag, frame.ct * prev_diag_value);
                 } else if n == 1 && m == 0 {
-                    let prev_value = p[p_m_base + (n - 1)];
+                    let prev_value = legendre[p_m_base + (n - 1)];
                     let dp_prev = dp[coeff_m_base + (n - 1)];
-                    p_mn_value = ct * prev_value;
-                    dp_mn = ct * dp_prev - st * prev_value;
-                    p[p_mn] = p_mn_value;
-                    dp[coeff_mn] = dp_mn;
+                    p_mn_value = frame.ct * prev_value;
+                    dp_mn = frame.ct.mul_add(dp_prev, -(frame.st * prev_value));
                 } else {
                     if m > n - 2 {
-                        p[p_m_base + (n - 2)] = 0.0;
+                        legendre[p_m_base + (n - 2)] = 0.0;
                         dp[coeff_m_base + (n - 2)] = 0.0;
                     }
                     let prev1 = p_m_base + (n - 1);
                     let prev2 = p_m_base + (n - 2);
                     let k_mn = self.k[coeff_mn];
-                    let prev1_value = p[prev1];
-                    p_mn_value = ct * prev1_value - k_mn * p[prev2];
-                    dp_mn = ct * dp[coeff_m_base + (n - 1)]
-                        - st * prev1_value
-                        - k_mn * dp[coeff_m_base + (n - 2)];
-                    p[p_mn] = p_mn_value;
-                    dp[coeff_mn] = dp_mn;
+                    let prev1_value = legendre[prev1];
+                    p_mn_value = frame.ct.mul_add(prev1_value, -(k_mn * legendre[prev2]));
+                    dp_mn = k_mn.mul_add(
+                        -dp[coeff_m_base + (n - 2)],
+                        frame
+                            .ct
+                            .mul_add(dp[coeff_m_base + (n - 1)], -(frame.st * prev1_value)),
+                    );
                 }
+                legendre[p_mn] = p_mn_value;
+                dp[coeff_mn] = dp_mn;
 
-                let tc_mn = self.c[coeff_mn] + dt * self.cd[coeff_mn];
+                let tc_mn = dt.mul_add(self.cd[coeff_mn], self.c[coeff_mn]);
                 let cp_m = cp[m];
                 let sp_m = sp[m];
 
@@ -331,19 +375,19 @@ impl GeoMag {
                     (tc_mn * cp_m, tc_mn * sp_m)
                 } else {
                     let coeff_nm1 = n * coeff_stride + (m - 1);
-                    let tc_nm1 = self.c[coeff_nm1] + dt * self.cd[coeff_nm1];
-                    (tc_mn * cp_m + tc_nm1 * sp_m, tc_mn * sp_m - tc_nm1 * cp_m)
+                    let tc_nm1 = dt.mul_add(self.cd[coeff_nm1], self.c[coeff_nm1]);
+                    (tc_mn.mul_add(cp_m, tc_nm1 * sp_m), tc_mn.mul_add(sp_m, -(tc_nm1 * cp_m)))
                 };
 
                 bt -= ar * temp1 * dp_mn;
                 bp += self.fm_values[m] * temp2 * par;
                 br += fn_n * temp1 * par;
 
-                if st == 0.0 && m == 1 {
+                if frame.st == 0.0 && m == 1 {
                     if n == 1 {
                         pp[n] = pp[n - 1];
                     } else {
-                        pp[n] = ct * pp[n - 1] - self.k[coeff_mn] * pp[n - 2];
+                        pp[n] = frame.ct.mul_add(pp[n - 1], -(self.k[coeff_mn] * pp[n - 2]));
                     }
                     let parp = ar * pp[n];
                     bpp += self.fm_values[m] * temp2 * parp;
@@ -351,26 +395,13 @@ impl GeoMag {
             }
         }
 
-        if st == 0.0 {
+        if frame.st == 0.0 {
             bp = bpp;
         } else {
-            bp /= st;
+            bp /= frame.st;
         }
 
-        let bx = -bt * ca - br * sa;
-        let by = bp;
-        let bh = (bx * bx + by * by).sqrt();
-
-        result.d = by.atan2(bx).to_degrees();
-        result.h = bh;
-
-        if result.h < BLACKOUT_ZONE {
-            return Err(anyhow!("in blackout zone (H={:.1})", result.h));
-        }
-        if result.h < CAUTION_ZONE {
-            // Keep behavior compatible with previous path where warning zone did not error out.
-        }
-        Ok(result)
+        Self::finalize_result(bt, br, bp, frame.ca, frame.sa)
     }
 }
 
@@ -412,7 +443,7 @@ impl GeoMagModel {
             .inner
             .geo_mag
             .calculate(lat, lon, 0.0, time, scratch)
-            .with_context(|| format!("geomag calculation failed for lat={}, lon={}", lat, lon))?;
+            .with_context(|| format!("geomag calculation failed for lat={lat}, lon={lon}"))?;
         Ok((result.d * 10.0).round() / 10.0)
     }
 }
@@ -425,10 +456,10 @@ fn current_decimal_year() -> f64 {
     use chrono::{Datelike, Local};
 
     let now = Local::now();
-    now.year() as f64 + ((now.month() as f64 - 1.0) / 12.0) + (now.day() as f64 / 365.0)
+    f64::from(now.year()) + ((f64::from(now.month()) - 1.0) / 12.0) + (f64::from(now.day()) / 365.0)
 }
 
-fn cache_key(lat: f64, lon: f64) -> (u64, u64) {
+const fn cache_key(lat: f64, lon: f64) -> (u64, u64) {
     (lat.to_bits(), lon.to_bits())
 }
 
@@ -499,7 +530,7 @@ fn compute_cached_declination(lat: f64, lon: f64, time: f64, use_cache: bool) ->
     declination_for_current_thread(lat, lon, time, use_cache)
 }
 
-pub(crate) fn batch_get_magnetic_variations_internal(
+pub fn batch_get_magnetic_variations_internal(
     coordinates: &[(f64, f64)],
 ) -> Result<Vec<f64>> {
     let decimal_year = current_decimal_year();

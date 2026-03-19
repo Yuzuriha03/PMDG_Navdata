@@ -28,7 +28,7 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql() -> &'static str {
+const fn build_insert_sql() -> &'static str {
     "INSERT OR IGNORE INTO tbl_enroute_ndbnavaids (area_code, icao_code, ndb_identifier, ndb_name, ndb_frequency, navaid_class, ndb_latitude, ndb_longitude, range, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
@@ -49,8 +49,7 @@ fn fetch_existing_pairs_for_keys(
     for chunk in keys.chunks(effective_batch) {
         let placeholders = vec!["(?, ?)"; chunk.len()].join(",");
         let query = format!(
-            "SELECT ndb_identifier, icao_code FROM {} WHERE (ndb_identifier, icao_code) IN ({})",
-            table_name, placeholders
+            "SELECT ndb_identifier, icao_code FROM {table_name} WHERE (ndb_identifier, icao_code) IN ({placeholders})"
         );
         let params = chunk
             .iter()
@@ -112,7 +111,7 @@ fn insert_rows(conn: &RustSqliteConnection, rows: &[NdbInsertRow]) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn process_ndbs_to_db(
+pub fn process_ndbs_to_db(
     dat_file_path: &str,
     conn: &RustSqliteConnection,
 ) -> Result<usize> {
@@ -122,7 +121,7 @@ pub(crate) fn process_ndbs_to_db(
         )
         .map_err(sqlite_error)?;
     let parsed_rows = parse_ndb_nav_file(dat_file_path)
-        .map_err(|err| anyhow!("parse_ndb_nav_file failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_ndb_nav_file failed: {err}"))?;
     let unique_pairs = parsed_rows
         .iter()
         .map(|(icao_code, navaid_identifier, _, _, _, _, _)| {
@@ -133,10 +132,9 @@ pub(crate) fn process_ndbs_to_db(
         .collect::<Vec<_>>();
     let existing_pairs =
         fetch_existing_pairs_for_keys(conn, ENROUTE_NDBS_TABLE, &unique_pairs, 500)
-            .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {}", err))?;
+            .map_err(|err| anyhow!("fetch_existing_pairs_for_keys failed: {err}"))?;
 
     let mut pending_rows: Vec<(String, String, String, f64, f64, f64, f64)> = Vec::new();
-    let mut coordinates = Vec::new();
     for (
         icao_code,
         navaid_identifier,
@@ -151,7 +149,6 @@ pub(crate) fn process_ndbs_to_db(
             continue;
         }
 
-        coordinates.push((navaid_latitude, navaid_longitude));
         pending_rows.push((
             icao_code,
             navaid_identifier,
@@ -180,7 +177,7 @@ pub(crate) fn process_ndbs_to_db(
                 ndb_range,
             )| NdbInsertRow {
                 area_code: area_code_for_icao(&icao_code).to_string(),
-                id: format!("{}{}", icao_code, navaid_identifier),
+                id: format!("{icao_code}{navaid_identifier}"),
                 icao_code,
                 navaid_class: "H W".to_string(),
                 navaid_frequency,
@@ -193,10 +190,10 @@ pub(crate) fn process_ndbs_to_db(
         )
         .collect();
 
-    insert_rows(conn, &rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &rows).map_err(|err| anyhow!("insert_rows failed: {err}"))?;
     Ok(rows.len())
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }

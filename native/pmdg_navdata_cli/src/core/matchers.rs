@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
@@ -26,7 +26,7 @@ const CODE_TYPE_NDB: &str = "NDB";
 const NAV_TYPE_VOR_DME: &str = "VOR/DME";
 
 #[derive(Clone, Copy)]
-pub(crate) struct RefMatchRequest<'a> {
+pub struct RefMatchRequest<'a> {
     pub identifier: Option<&'a str>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
@@ -34,22 +34,22 @@ pub(crate) struct RefMatchRequest<'a> {
     pub airport_id: Option<&'a str>,
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct RefMatchResult {
+#[derive(Clone, Copy, Default)]
+pub struct RefMatchResult {
     pub ref_table: Option<&'static str>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoordinateSearchType {
+pub enum CoordinateSearchType {
     RecommendedNavaid,
     Waypoint,
     Center,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct CoordinateLookupRequest<'a> {
+pub struct CoordinateLookupRequest<'a> {
     pub search_type: CoordinateSearchType,
     pub identifier: Option<&'a str>,
     pub icao_code: Option<&'a str>,
@@ -57,7 +57,7 @@ pub(crate) struct CoordinateLookupRequest<'a> {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct CoordinateLookupResult {
+pub struct CoordinateLookupResult {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
 }
@@ -82,7 +82,7 @@ fn absolute_path(path: &str) -> Result<String> {
         std::env::current_dir()?.join(candidate)
     };
 
-    Ok(pathbuf_to_string(absolute))
+    Ok(pathbuf_to_string(&absolute))
 }
 
 fn absolute_optional_path(path: Option<&str>) -> Result<String> {
@@ -92,7 +92,7 @@ fn absolute_optional_path(path: Option<&str>) -> Result<String> {
     }
 }
 
-fn pathbuf_to_string(path: PathBuf) -> String {
+fn pathbuf_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -101,12 +101,12 @@ fn experimental_parallel_db_matcher_enabled() -> bool {
 }
 
 fn identifier_filter_fingerprint(required_identifiers: Option<&HashSet<Box<str>>>) -> String {
-    match required_identifiers {
-        None => "all".to_string(),
-        Some(required_identifiers) => {
+    required_identifiers.map_or_else(
+        || "all".to_string(),
+        |required_identifiers| {
             let mut identifiers = required_identifiers
                 .iter()
-                .map(|identifier| identifier.as_ref())
+                .map(std::convert::AsRef::as_ref)
                 .collect::<Vec<_>>();
             identifiers.sort_unstable();
 
@@ -120,8 +120,8 @@ fn identifier_filter_fingerprint(required_identifiers: Option<&HashSet<Box<str>>
                 required_identifiers.len(),
                 hasher.finish()
             )
-        }
-    }
+        },
+    )
 }
 
 fn next_ascii_field<'a>(line: &'a str, cursor: &mut usize) -> Option<&'a str> {
@@ -160,7 +160,7 @@ type CoordinateMap = HashMap<String, CoordinateByIcao>;
 type CoordinateMapByRegion = HashMap<String, HashMap<String, CoordinateByRegion>>;
 
 #[derive(Clone)]
-pub(crate) struct CoordinateMatcher {
+pub struct CoordinateMatcher {
     fix_data: CoordinateMap,
     fix_data_by_region: CoordinateMapByRegion,
     fix_candidates_by_identifier: CoordinateMap,
@@ -168,19 +168,19 @@ pub(crate) struct CoordinateMatcher {
 }
 
 #[derive(Clone)]
-pub(crate) struct SharedCoordinateCache {
+pub struct SharedCoordinateCache {
     matcher: CoordinateMatcher,
 }
 
 #[derive(Clone)]
-pub(crate) struct IcaoCodeResolver {
-    fix_map: HashMap<String, String>,
-    vor_dme_map: HashMap<String, String>,
+pub struct IcaoCodeResolver {
+    fix_lookup: HashMap<String, String>,
+    vor_dme_codes: HashMap<String, String>,
     ndb_map: HashMap<String, String>,
 }
 
 #[derive(Clone)]
-pub(crate) struct RefTableMatcher {
+pub struct RefTableMatcher {
     airport_map: HashMap<String, (f64, f64)>,
     by_identifier: HashMap<String, Vec<RefCandidate>>,
 }
@@ -273,13 +273,12 @@ fn load_airport_rows_scoped_native(
 
     let identifiers = required_identifiers
         .iter()
-        .map(|identifier| identifier.as_ref())
+        .map(std::convert::AsRef::as_ref)
         .collect::<Vec<_>>();
     for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
         let placeholders = vec!["?"; chunk.len()].join(", ");
         let sql = format!(
-            "SELECT airport_identifier, airport_ref_latitude, airport_ref_longitude FROM tbl_airports WHERE airport_identifier IN ({})",
-            placeholders
+            "SELECT airport_identifier, airport_ref_latitude, airport_ref_longitude FROM tbl_airports WHERE airport_identifier IN ({placeholders})"
         );
         let params = chunk
             .iter()
@@ -351,6 +350,47 @@ fn append_rows_4_airport_native(
     Ok(())
 }
 
+fn scoped_select_prefix(table_spec: ScopedTableSpec<'_>) -> Option<&'static str> {
+    match (
+        table_spec.table_name,
+        table_spec.region_column.is_some(),
+        table_spec.airport_column.is_some(),
+    ) {
+        ("tbl_enroute_ndbnavaids", false, false) => Some(
+            "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({})",
+        ),
+        ("tbl_vhfnavaids", false, false) => Some(
+            "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({})",
+        ),
+        ("tbl_terminal_ndbnavaids", false, true) => Some(
+            "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids WHERE ndb_identifier IN ({})",
+        ),
+        ("tbl_enroute_waypoints", false, false) => Some(
+            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({})",
+        ),
+        ("tbl_terminal_waypoints", true, false) => Some(
+            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints WHERE waypoint_identifier IN ({})",
+        ),
+        ("tbl_runways", false, true) => Some(
+            "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways WHERE runway_identifier IN ({})",
+        ),
+        ("tbl_localizers_glideslopes", false, true) => Some(
+            "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes WHERE llz_identifier IN ({})",
+        ),
+        ("tbl_gls", false, true) => Some(
+            "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls WHERE gls_ref_path_identifier IN ({})",
+        ),
+        _ => None,
+    }
+}
+
+fn collect_identifier_refs(required_identifiers: &HashSet<Box<str>>) -> Vec<&str> {
+    required_identifiers
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect::<Vec<_>>()
+}
+
 fn append_rows_scoped_native(
     conn: &RustSqliteConnection,
     table_spec: ScopedTableSpec<'_>,
@@ -361,41 +401,9 @@ fn append_rows_scoped_native(
         return Ok(());
     }
 
-    let identifiers = required_identifiers
-        .iter()
-        .map(|identifier| identifier.as_ref())
-        .collect::<Vec<_>>();
-
-    let select_prefix = match (
-        table_spec.table_name,
-        table_spec.region_column.is_some(),
-        table_spec.airport_column.is_some(),
-    ) {
-        ("tbl_enroute_ndbnavaids", false, false) => {
-            "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({})"
-        }
-        ("tbl_vhfnavaids", false, false) => {
-            "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({})"
-        }
-        ("tbl_terminal_ndbnavaids", false, true) => {
-            "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids WHERE ndb_identifier IN ({})"
-        }
-        ("tbl_enroute_waypoints", false, false) => {
-            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({})"
-        }
-        ("tbl_terminal_waypoints", true, false) => {
-            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints WHERE waypoint_identifier IN ({})"
-        }
-        ("tbl_runways", false, true) => {
-            "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways WHERE runway_identifier IN ({})"
-        }
-        ("tbl_localizers_glideslopes", false, true) => {
-            "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes WHERE llz_identifier IN ({})"
-        }
-        ("tbl_gls", false, true) => {
-            "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls WHERE gls_ref_path_identifier IN ({})"
-        }
-        _ => return Ok(()),
+    let identifiers = collect_identifier_refs(required_identifiers);
+    let Some(select_prefix) = scoped_select_prefix(table_spec) else {
+        return Ok(());
     };
 
     for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
@@ -470,46 +478,15 @@ fn load_scoped_candidates_native(
     db_path: &str,
     timeout: u32,
     table_spec: ScopedTableSpec<'static>,
-    required_identifiers: Arc<HashSet<Box<str>>>,
+    required_identifiers: &HashSet<Box<str>>,
 ) -> Result<Vec<(String, RefCandidate)>> {
     let conn = open_sqlite_readonly_connection(db_path, timeout)?;
     let mut rows = Vec::new();
     if !required_identifiers.is_empty() {
-        let select_prefix = match (
-            table_spec.table_name,
-            table_spec.region_column.is_some(),
-            table_spec.airport_column.is_some(),
-        ) {
-            ("tbl_enroute_ndbnavaids", false, false) => {
-                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({})"
-            }
-            ("tbl_vhfnavaids", false, false) => {
-                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({})"
-            }
-            ("tbl_terminal_ndbnavaids", false, true) => {
-                "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids WHERE ndb_identifier IN ({})"
-            }
-            ("tbl_enroute_waypoints", false, false) => {
-                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({})"
-            }
-            ("tbl_terminal_waypoints", true, false) => {
-                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints WHERE waypoint_identifier IN ({})"
-            }
-            ("tbl_runways", false, true) => {
-                "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways WHERE runway_identifier IN ({})"
-            }
-            ("tbl_localizers_glideslopes", false, true) => {
-                "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes WHERE llz_identifier IN ({})"
-            }
-            ("tbl_gls", false, true) => {
-                "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls WHERE gls_ref_path_identifier IN ({})"
-            }
-            _ => return Ok(rows),
+        let Some(select_prefix) = scoped_select_prefix(table_spec) else {
+            return Ok(rows);
         };
-        let identifiers = required_identifiers
-            .iter()
-            .map(|identifier| identifier.as_ref())
-            .collect::<Vec<_>>();
+        let identifiers = collect_identifier_refs(required_identifiers);
         for chunk in identifiers.chunks(SQLITE_MAX_VARIABLE_NUMBER) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
             let sql = select_prefix.replace("{}", &placeholders);
@@ -583,11 +560,11 @@ fn load_scoped_candidates_native(
 fn load_scoped_airports_native(
     db_path: &str,
     timeout: u32,
-    required_identifiers: Arc<HashSet<Box<str>>>,
+    required_identifiers: &HashSet<Box<str>>,
 ) -> Result<HashMap<String, (f64, f64)>> {
     let conn = open_sqlite_readonly_connection(db_path, timeout)?;
     let mut airport_map = HashMap::new();
-    load_airport_rows_scoped_native(&conn, &mut airport_map, &required_identifiers)?;
+    load_airport_rows_scoped_native(&conn, &mut airport_map, required_identifiers)?;
     conn.close_native();
     Ok(airport_map)
 }
@@ -595,12 +572,12 @@ fn load_scoped_airports_native(
 fn create_ref_table_matcher_from_db_parallel(
     db_path: &str,
     timeout: u32,
-    required_identifiers: Arc<HashSet<Box<str>>>,
+    required_identifiers: &Arc<HashSet<Box<str>>>,
 ) -> Result<RefTableMatcher> {
-    let airport_required_identifiers = Arc::clone(&required_identifiers);
+    let airport_required_identifiers = Arc::clone(required_identifiers);
     let airport_path = db_path.to_owned();
     let airport_handle = thread::spawn(move || {
-        load_scoped_airports_native(&airport_path, timeout, airport_required_identifiers)
+        load_scoped_airports_native(&airport_path, timeout, airport_required_identifiers.as_ref())
     });
 
     let table_specs = [
@@ -657,9 +634,9 @@ fn create_ref_table_matcher_from_db_parallel(
     let mut handles = Vec::with_capacity(table_specs.len());
     for spec in table_specs {
         let db_path = db_path.to_owned();
-        let required_identifiers = Arc::clone(&required_identifiers);
+        let required_identifiers = Arc::clone(required_identifiers);
         handles.push(thread::spawn(move || {
-            load_scoped_candidates_native(&db_path, timeout, spec, required_identifiers)
+            load_scoped_candidates_native(&db_path, timeout, spec, required_identifiers.as_ref())
         }));
     }
 
@@ -924,20 +901,20 @@ impl IcaoCodeResolver {
         fix_items: Vec<(String, String)>,
         nav_items: Vec<(String, String, String)>,
     ) -> Self {
-        let mut fix_map = HashMap::new();
+        let mut fix_lookup = HashMap::new();
         for (identifier, icao) in fix_items {
             if !identifier.is_empty() && !icao.is_empty() {
-                fix_map.insert(identifier, icao);
+                fix_lookup.insert(identifier, icao);
             }
         }
 
-        let mut vor_dme_map = HashMap::new();
+        let mut vor_dme_codes = HashMap::new();
         let mut ndb_map = HashMap::new();
         for (identifier, nav_type, icao) in nav_items {
             if !identifier.is_empty() && !nav_type.is_empty() && !icao.is_empty() {
                 match nav_type.as_str() {
                     NAV_TYPE_VOR_DME => {
-                        vor_dme_map.insert(identifier, icao);
+                        vor_dme_codes.insert(identifier, icao);
                     }
                     CODE_TYPE_NDB => {
                         ndb_map.insert(identifier, icao);
@@ -948,8 +925,8 @@ impl IcaoCodeResolver {
         }
 
         Self {
-            fix_map,
-            vor_dme_map,
+            fix_lookup,
+            vor_dme_codes,
             ndb_map,
         }
     }
@@ -964,192 +941,223 @@ impl IcaoCodeResolver {
 
         match code_type {
             CODE_TYPE_DESIGNATED_POINT | CODE_TYPE_LOCAL_DESIGNATED_POINT => {
-                self.fix_map.get(identifier).cloned()
+                self.fix_lookup.get(identifier).cloned()
             }
-            CODE_TYPE_VORDME => self.vor_dme_map.get(identifier).cloned(),
+            CODE_TYPE_VORDME => self.vor_dme_codes.get(identifier).cloned(),
             CODE_TYPE_NDB => self.ndb_map.get(identifier).cloned(),
             _ => None,
         }
     }
 }
 
-pub(crate) fn create_coordinate_matcher_from_files(
-    earth_fix_path: Option<String>,
-    earth_nav_path: Option<String>,
+pub fn create_coordinate_matcher_from_files(
+    earth_fix_path: Option<&str>,
+    earth_nav_path: Option<&str>,
     required_identifiers: Option<&HashSet<Box<str>>>,
 ) -> CoordinateMatcher {
     let mut matcher = CoordinateMatcher::new();
     let mut seen_nav_keys = HashSet::new();
 
-    if let Some(path) = earth_fix_path {
-        if !path.is_empty() {
-            if let Ok(file) = File::open(path) {
-                let mut reader = BufReader::with_capacity(MATCHER_FILE_READER_CAPACITY, file);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    let Ok(read) = reader.read_line(&mut line) else {
-                        break;
-                    };
-                    if read == 0 {
-                        break;
-                    }
-
-                    let mut cursor = 0usize;
-                    let Some(lat_field) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(lon_field) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(identifier) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    if required_identifiers.is_some_and(|required| !required.contains(identifier)) {
-                        continue;
-                    }
-                    let Some(region_code) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(icao_code) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-
-                    let lat: f64 = match lat_field.parse() {
-                        Ok(value) => value,
-                        Err(_) => continue,
-                    };
-                    let lon: f64 = match lon_field.parse() {
-                        Ok(value) => value,
-                        Err(_) => continue,
-                    };
-                    matcher.push_fix_entry(
-                        identifier.to_string(),
-                        icao_code.to_string(),
-                        region_code.to_string(),
-                        lat,
-                        lon,
-                    );
-                }
-            }
-        }
-    }
-
-    if let Some(path) = earth_nav_path {
-        if !path.is_empty() {
-            if let Ok(file) = File::open(path) {
-                let mut reader = BufReader::with_capacity(MATCHER_FILE_READER_CAPACITY, file);
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    let Ok(read) = reader.read_line(&mut line) else {
-                        break;
-                    };
-                    if read == 0 {
-                        break;
-                    }
-
-                    let mut cursor = 0usize;
-                    let Some(_record_type) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(lat_field) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(lon_field) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(_) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(_) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(_) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(identifier_6) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(identifier_7) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(identifier_8) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(icao_code_9) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-                    let Some(icao_code_10) = next_ascii_field(&line, &mut cursor) else {
-                        continue;
-                    };
-
-                    let needs_identifier_6 =
-                        required_identifiers.is_none_or(|required| required.contains(identifier_6));
-                    let needs_identifier_7 =
-                        required_identifiers.is_none_or(|required| required.contains(identifier_7));
-                    let needs_identifier_8 =
-                        required_identifiers.is_none_or(|required| required.contains(identifier_8));
-                    if !needs_identifier_6 && !needs_identifier_7 && !needs_identifier_8 {
-                        continue;
-                    }
-
-                    let lat: f64 = match lat_field.parse() {
-                        Ok(value) => value,
-                        Err(_) => continue,
-                    };
-                    let lon: f64 = match lon_field.parse() {
-                        Ok(value) => value,
-                        Err(_) => continue,
-                    };
-
-                    if needs_identifier_8 {
-                        let identifier = identifier_8.to_string();
-                        let icao_code = icao_code_10.to_string();
-                        let key = (identifier.clone(), icao_code.clone());
-                        if seen_nav_keys.insert(key) {
-                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
-                        }
-                    }
-
-                    if needs_identifier_7 {
-                        let identifier = identifier_7.to_string();
-                        let icao_code = icao_code_9.to_string();
-                        let key = (identifier.clone(), icao_code.clone());
-                        if seen_nav_keys.insert(key) {
-                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
-                        }
-                    }
-
-                    if needs_identifier_6 {
-                        let identifier = identifier_6.to_string();
-                        let icao_code = identifier_8.to_string();
-                        let key = (identifier.clone(), icao_code.clone());
-                        if seen_nav_keys.insert(key) {
-                            push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    load_earth_fix_entries(
+        &mut matcher,
+        earth_fix_path,
+        required_identifiers,
+    );
+    load_earth_nav_entries(
+        &mut matcher,
+        &mut seen_nav_keys,
+        earth_nav_path,
+        required_identifiers,
+    );
 
     matcher
 }
 
-pub(crate) fn get_shared_coordinate_cache(
-    earth_fix_path: Option<String>,
-    earth_nav_path: Option<String>,
-    required_identifiers: Option<Arc<HashSet<Box<str>>>>,
+fn load_earth_fix_entries(
+    matcher: &mut CoordinateMatcher,
+    earth_fix_path: Option<&str>,
+    required_identifiers: Option<&HashSet<Box<str>>>,
+) {
+    let Some(path) = earth_fix_path else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+
+    let mut reader = BufReader::with_capacity(MATCHER_FILE_READER_CAPACITY, file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+
+        let mut cursor = 0usize;
+        let Some(lat_field) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(lon_field) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(identifier) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        if required_identifiers.is_some_and(|required| !required.contains(identifier)) {
+            continue;
+        }
+        let Some(region_code) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(icao_code) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+
+        let lat: f64 = match lat_field.parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let lon: f64 = match lon_field.parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        matcher.push_fix_entry(
+            identifier.to_string(),
+            icao_code.to_string(),
+            region_code.to_string(),
+            lat,
+            lon,
+        );
+    }
+}
+
+fn load_earth_nav_entries(
+    matcher: &mut CoordinateMatcher,
+    seen_nav_keys: &mut HashSet<(String, String)>,
+    earth_nav_path: Option<&str>,
+    required_identifiers: Option<&HashSet<Box<str>>>,
+) {
+    let Some(path) = earth_nav_path else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    let Ok(file) = File::open(path) else {
+        return;
+    };
+
+    let mut reader = BufReader::with_capacity(MATCHER_FILE_READER_CAPACITY, file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let Ok(read) = reader.read_line(&mut line) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+
+        let mut cursor = 0usize;
+        let Some(_record_type) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(lat_field) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(lon_field) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        if next_ascii_field(&line, &mut cursor).is_none()
+            || next_ascii_field(&line, &mut cursor).is_none()
+            || next_ascii_field(&line, &mut cursor).is_none()
+        {
+            continue;
+        }
+        let Some(identifier_6) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(identifier_7) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(identifier_8) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(icao_code_9) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+        let Some(icao_code_10) = next_ascii_field(&line, &mut cursor) else {
+            continue;
+        };
+
+        let needs_identifier_6 =
+            required_identifiers.is_none_or(|required| required.contains(identifier_6));
+        let needs_identifier_7 =
+            required_identifiers.is_none_or(|required| required.contains(identifier_7));
+        let needs_identifier_8 =
+            required_identifiers.is_none_or(|required| required.contains(identifier_8));
+        if !needs_identifier_6 && !needs_identifier_7 && !needs_identifier_8 {
+            continue;
+        }
+
+        let lat: f64 = match lat_field.parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let lon: f64 = match lon_field.parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if needs_identifier_8 {
+            let identifier = identifier_8.to_string();
+            let icao_code = icao_code_10.to_string();
+            let key = (identifier.clone(), icao_code.clone());
+            if seen_nav_keys.insert(key) {
+                push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
+            }
+        }
+
+        if needs_identifier_7 {
+            let identifier = identifier_7.to_string();
+            let icao_code = icao_code_9.to_string();
+            let key = (identifier.clone(), icao_code.clone());
+            if seen_nav_keys.insert(key) {
+                push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
+            }
+        }
+
+        if needs_identifier_6 {
+            let identifier = identifier_6.to_string();
+            let icao_code = identifier_8.to_string();
+            let key = (identifier.clone(), icao_code.clone());
+            if seen_nav_keys.insert(key) {
+                push_nav_entry(&mut matcher.nav_data, identifier, icao_code, lat, lon);
+            }
+        }
+    }
+}
+
+pub fn get_shared_coordinate_cache(
+    earth_fix_path: Option<&str>,
+    earth_nav_path: Option<&str>,
+    required_identifiers: Option<&Arc<HashSet<Box<str>>>>,
 ) -> Result<Arc<SharedCoordinateCache>> {
     let key = format!(
         "{}|{}|{}",
-        absolute_optional_path(earth_fix_path.as_deref())?,
-        absolute_optional_path(earth_nav_path.as_deref())?,
-        identifier_filter_fingerprint(required_identifiers.as_deref())
+        absolute_optional_path(earth_fix_path)?,
+        absolute_optional_path(earth_nav_path)?,
+        identifier_filter_fingerprint(required_identifiers.map(Arc::as_ref))
     );
 
-    if let Some(cached) = coordinate_cache().lock().unwrap().get(&key).cloned() {
+    let cached = coordinate_cache().lock().unwrap().get(&key).cloned();
+    if let Some(cached) = cached {
         return Ok(cached);
     }
 
@@ -1157,7 +1165,7 @@ pub(crate) fn get_shared_coordinate_cache(
         matcher: create_coordinate_matcher_from_files(
             earth_fix_path,
             earth_nav_path,
-            required_identifiers.as_deref(),
+            required_identifiers.map(Arc::as_ref),
         ),
     });
     coordinate_cache()
@@ -1167,7 +1175,7 @@ pub(crate) fn get_shared_coordinate_cache(
     Ok(cache)
 }
 
-pub(crate) fn create_ref_table_matcher_from_db(
+pub fn create_ref_table_matcher_from_db(
     conn: &RustSqliteConnection,
     required_identifiers: Option<&HashSet<Box<str>>>,
 ) -> Result<RefTableMatcher> {
@@ -1175,151 +1183,9 @@ pub(crate) fn create_ref_table_matcher_from_db(
     let mut by_identifier = HashMap::new();
 
     if let Some(required_identifiers) = required_identifiers {
-        load_airport_rows_scoped_native(conn, &mut airport_map, required_identifiers)?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_enroute_ndbnavaids",
-                region_column: None,
-                airport_column: None,
-                ref_table: "tbl_enroute_ndbnavaids",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_vhfnavaids",
-                region_column: None,
-                airport_column: None,
-                ref_table: "tbl_vhfnavaids",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_terminal_ndbnavaids",
-                region_column: None,
-                airport_column: Some("airport_identifier"),
-                ref_table: "tbl_terminal_ndbnavaids",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_enroute_waypoints",
-                region_column: None,
-                airport_column: None,
-                ref_table: "tbl_enroute_waypoints",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_terminal_waypoints",
-                region_column: Some("region_code"),
-                airport_column: None,
-                ref_table: "tbl_terminal_waypoints",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_runways",
-                region_column: None,
-                airport_column: Some("airport_identifier"),
-                ref_table: "tbl_runways",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_localizers_glideslopes",
-                region_column: None,
-                airport_column: Some("airport_identifier"),
-                ref_table: "tbl_localizers_glideslopes",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
-        append_rows_scoped_native(
-            conn,
-            ScopedTableSpec {
-                table_name: "tbl_gls",
-                region_column: None,
-                airport_column: Some("airport_identifier"),
-                ref_table: "tbl_gls",
-            },
-            &mut by_identifier,
-            required_identifiers,
-        )?;
+        append_scoped_tables(conn, &mut airport_map, &mut by_identifier, required_identifiers)?;
     } else {
-        load_airport_rows_native(conn, &mut airport_map)?;
-        append_rows_3_native(
-            conn,
-            "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids",
-            &mut by_identifier,
-            "tbl_enroute_ndbnavaids",
-        )?;
-        append_rows_3_native(
-            conn,
-            "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids",
-            &mut by_identifier,
-            "tbl_vhfnavaids",
-        )?;
-        append_rows_3_native(
-            conn,
-            "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_terminal_ndbnavaids",
-            &mut by_identifier,
-            "tbl_terminal_ndbnavaids",
-        )?;
-        append_rows_3_native(
-            conn,
-            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints",
-            &mut by_identifier,
-            "tbl_enroute_waypoints",
-        )?;
-        append_rows_4_native(
-            conn,
-            "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints",
-            &mut by_identifier,
-            "tbl_terminal_waypoints",
-        )?;
-        append_rows_4_airport_native(
-            conn,
-            "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids",
-            &mut by_identifier,
-            "tbl_terminal_ndbnavaids",
-        )?;
-        append_rows_4_airport_native(
-            conn,
-            "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways",
-            &mut by_identifier,
-            "tbl_runways",
-        )?;
-        append_rows_4_airport_native(
-            conn,
-            "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes",
-            &mut by_identifier,
-            "tbl_localizers_glideslopes",
-        )?;
-        append_rows_4_airport_native(
-            conn,
-            "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls",
-            &mut by_identifier,
-            "tbl_gls",
-        )?;
+        append_full_tables(conn, &mut airport_map, &mut by_identifier)?;
     }
 
     Ok(RefTableMatcher {
@@ -1328,44 +1194,206 @@ pub(crate) fn create_ref_table_matcher_from_db(
     })
 }
 
-pub(crate) fn get_shared_ref_matcher(
+fn append_scoped_tables(
+    conn: &RustSqliteConnection,
+    airport_map: &mut HashMap<String, (f64, f64)>,
+    by_identifier: &mut HashMap<String, Vec<RefCandidate>>,
+    required_identifiers: &HashSet<Box<str>>,
+) -> Result<()> {
+    load_airport_rows_scoped_native(conn, airport_map, required_identifiers)?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_enroute_ndbnavaids",
+            region_column: None,
+            airport_column: None,
+            ref_table: "tbl_enroute_ndbnavaids",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_vhfnavaids",
+            region_column: None,
+            airport_column: None,
+            ref_table: "tbl_vhfnavaids",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_terminal_ndbnavaids",
+            region_column: None,
+            airport_column: Some("airport_identifier"),
+            ref_table: "tbl_terminal_ndbnavaids",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_enroute_waypoints",
+            region_column: None,
+            airport_column: None,
+            ref_table: "tbl_enroute_waypoints",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_terminal_waypoints",
+            region_column: Some("region_code"),
+            airport_column: None,
+            ref_table: "tbl_terminal_waypoints",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_runways",
+            region_column: None,
+            airport_column: Some("airport_identifier"),
+            ref_table: "tbl_runways",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_localizers_glideslopes",
+            region_column: None,
+            airport_column: Some("airport_identifier"),
+            ref_table: "tbl_localizers_glideslopes",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    append_rows_scoped_native(
+        conn,
+        ScopedTableSpec {
+            table_name: "tbl_gls",
+            region_column: None,
+            airport_column: Some("airport_identifier"),
+            ref_table: "tbl_gls",
+        },
+        by_identifier,
+        required_identifiers,
+    )?;
+    Ok(())
+}
+
+fn append_full_tables(
+    conn: &RustSqliteConnection,
+    airport_map: &mut HashMap<String, (f64, f64)>,
+    by_identifier: &mut HashMap<String, Vec<RefCandidate>>,
+) -> Result<()> {
+    load_airport_rows_native(conn, airport_map)?;
+    append_rows_3_native(
+        conn,
+        "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids",
+        by_identifier,
+        "tbl_enroute_ndbnavaids",
+    )?;
+    append_rows_3_native(
+        conn,
+        "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids",
+        by_identifier,
+        "tbl_vhfnavaids",
+    )?;
+    append_rows_3_native(
+        conn,
+        "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_terminal_ndbnavaids",
+        by_identifier,
+        "tbl_terminal_ndbnavaids",
+    )?;
+    append_rows_3_native(
+        conn,
+        "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints",
+        by_identifier,
+        "tbl_enroute_waypoints",
+    )?;
+    append_rows_4_native(
+        conn,
+        "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude, region_code FROM tbl_terminal_waypoints",
+        by_identifier,
+        "tbl_terminal_waypoints",
+    )?;
+    append_rows_4_airport_native(
+        conn,
+        "SELECT ndb_identifier, ndb_latitude, ndb_longitude, airport_identifier FROM tbl_terminal_ndbnavaids",
+        by_identifier,
+        "tbl_terminal_ndbnavaids",
+    )?;
+    append_rows_4_airport_native(
+        conn,
+        "SELECT runway_identifier, runway_latitude, runway_longitude, airport_identifier FROM tbl_runways",
+        by_identifier,
+        "tbl_runways",
+    )?;
+    append_rows_4_airport_native(
+        conn,
+        "SELECT llz_identifier, llz_latitude, llz_longitude, airport_identifier FROM tbl_localizers_glideslopes",
+        by_identifier,
+        "tbl_localizers_glideslopes",
+    )?;
+    append_rows_4_airport_native(
+        conn,
+        "SELECT gls_ref_path_identifier, station_latitude, station_longitude, airport_identifier FROM tbl_gls",
+        by_identifier,
+        "tbl_gls",
+    )?;
+    Ok(())
+}
+
+pub fn get_shared_ref_matcher(
     db_path: &str,
     timeout: u32,
-    required_identifiers: Option<Arc<HashSet<Box<str>>>>,
+    required_identifiers: Option<&Arc<HashSet<Box<str>>>>,
 ) -> Result<Arc<RefTableMatcher>> {
     let key = format!(
         "{}|{}",
         absolute_path(db_path)?,
-        identifier_filter_fingerprint(required_identifiers.as_deref())
+        identifier_filter_fingerprint(required_identifiers.map(Arc::as_ref))
     );
-    if let Some(cached) = ref_matcher_cache().lock().unwrap().get(&key).cloned() {
+    let cached = ref_matcher_cache().lock().unwrap().get(&key).cloned();
+    if let Some(cached) = cached {
         return Ok(cached);
     }
 
-    let matcher = if let Some(conn) = get_shared_connection(db_path)? {
+    let matcher = if let Some(conn) = get_shared_connection(db_path) {
         if experimental_parallel_db_matcher_enabled() {
-            if let Some(required_identifiers) = required_identifiers.clone() {
+            if let Some(required_identifiers) = required_identifiers {
                 create_ref_table_matcher_from_db_parallel(db_path, timeout, required_identifiers)?
             } else {
-                create_ref_table_matcher_from_db(&conn, required_identifiers.as_deref())?
+                create_ref_table_matcher_from_db(&conn, required_identifiers.map(Arc::as_ref))?
             }
         } else {
-            create_ref_table_matcher_from_db(&conn, required_identifiers.as_deref())?
+            create_ref_table_matcher_from_db(&conn, required_identifiers.map(Arc::as_ref))?
         }
     } else {
         if experimental_parallel_db_matcher_enabled() {
-            if let Some(required_identifiers) = required_identifiers.clone() {
+            if let Some(required_identifiers) = required_identifiers {
                 create_ref_table_matcher_from_db_parallel(db_path, timeout, required_identifiers)?
             } else {
                 let conn = RustSqliteConnection::open_native(db_path, timeout)?;
                 let matcher =
-                    create_ref_table_matcher_from_db(&conn, required_identifiers.as_deref())?;
+                    create_ref_table_matcher_from_db(&conn, required_identifiers.map(Arc::as_ref))?;
                 conn.close_native();
                 matcher
             }
         } else {
             let conn = RustSqliteConnection::open_native(db_path, timeout)?;
-            let matcher = create_ref_table_matcher_from_db(&conn, required_identifiers.as_deref())?;
+            let matcher = create_ref_table_matcher_from_db(&conn, required_identifiers.map(Arc::as_ref))?;
             conn.close_native();
             matcher
         }

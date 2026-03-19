@@ -45,13 +45,13 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql() -> &'static str {
+const fn build_insert_sql() -> &'static str {
     "INSERT OR IGNORE INTO tbl_localizers_glideslopes (area_code, icao_code, airport_identifier, runway_identifier, llz_identifier, llz_latitude, llz_longitude, llz_frequency, llz_bearing, llz_width, ils_mls_gls_category, gs_latitude, gs_longitude, gs_angle, gs_elevation, station_declination, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
 fn open_text_reader(file_path: &str) -> Result<BufReader<File>> {
     let file =
-        File::open(file_path).map_err(|err| anyhow!("failed to open {}: {}", file_path, err))?;
+        File::open(file_path).map_err(|err| anyhow!("failed to open {file_path}: {err}"))?;
     Ok(BufReader::with_capacity(DAT_READER_CAPACITY, file))
 }
 
@@ -74,7 +74,7 @@ fn parse_frequency(raw: &str) -> Option<f64> {
         return None;
     }
     let (head, tail) = raw.split_at(3);
-    format!("{}.{}", head, tail).parse().ok()
+    format!("{head}.{tail}").parse().ok()
 }
 
 fn parse_localizers(file_path: &str) -> Result<HashMap<(String, String, String), LocalizerInfo>> {
@@ -135,9 +135,7 @@ fn fetch_existing_keys_for_rows(
     for chunk in keys.chunks(effective_batch) {
         let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(",");
         let query = format!(
-            "SELECT airport_identifier, runway_identifier, llz_identifier FROM {} WHERE (airport_identifier, runway_identifier, llz_identifier) IN ({})",
-            table_name,
-            placeholders
+            "SELECT airport_identifier, runway_identifier, llz_identifier FROM {table_name} WHERE (airport_identifier, runway_identifier, llz_identifier) IN ({placeholders})"
         );
         let params = chunk
             .iter()
@@ -317,13 +315,13 @@ fn parse_gs_rows(file_path: &str) -> Result<Vec<GsInsertRow>> {
     Ok(out)
 }
 
-pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection) -> Result<usize> {
+pub fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection) -> Result<usize> {
     conn.execute_statement_native(
             "\n            CREATE TABLE IF NOT EXISTS tbl_localizers_glideslopes (\n                area_code TEXT,\n                icao_code TEXT,\n                airport_identifier TEXT,\n                runway_identifier TEXT,\n                llz_identifier TEXT,\n                llz_latitude REAL,\n                llz_longitude REAL,\n                llz_frequency REAL,\n                llz_bearing REAL,\n                llz_width REAL,\n                ils_mls_gls_category TEXT,\n                gs_latitude REAL,\n                gs_longitude REAL,\n                gs_angle REAL,\n                gs_elevation INTEGER,\n                station_declination REAL,\n                id TEXT\n            )\n        ",
             &[],
         )
         .map_err(sqlite_error)?;
-    let rows = parse_gs_rows(file_path).map_err(|err| anyhow!("parse_gs_rows failed: {}", err))?;
+    let rows = parse_gs_rows(file_path).map_err(|err| anyhow!("parse_gs_rows failed: {err}"))?;
     let unique_keys = rows
         .iter()
         .map(|row| {
@@ -337,7 +335,7 @@ pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection)
         .into_iter()
         .collect::<Vec<_>>();
     let existing_keys = fetch_existing_keys_for_rows(conn, LOCALIZERS_TABLE, &unique_keys, 300)
-        .map_err(|err| anyhow!("fetch_existing_keys_for_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("fetch_existing_keys_for_rows failed: {err}"))?;
 
     let new_rows: Vec<GsInsertRow> = rows
         .into_iter()
@@ -350,10 +348,10 @@ pub(crate) fn process_ils_gs_to_db(file_path: &str, conn: &RustSqliteConnection)
         })
         .collect();
 
-    insert_rows(conn, &new_rows).map_err(|err| anyhow!("insert_rows failed: {}", err))?;
+    insert_rows(conn, &new_rows).map_err(|err| anyhow!("insert_rows failed: {err}"))?;
     Ok(new_rows.len())
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }

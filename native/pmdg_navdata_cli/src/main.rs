@@ -253,7 +253,7 @@ fn run_cli(cli: &Cli, config: &PathsConfig) -> Result<()> {
 fn run_native_steps(step: Step, timeout: u32, config: &PathsConfig) -> Result<()> {
     let shared_conn = open_sqlite_connection(&config.db_output_path, timeout)?;
     shared_conn.optimize_native()?;
-    set_shared_connection(&config.db_output_path, &shared_conn)?;
+    set_shared_connection(&config.db_output_path, &shared_conn);
 
     let result = execute_selected_steps(step, timeout, config);
     let close_result = close_shared_connection(&config.db_output_path, true);
@@ -282,7 +282,7 @@ fn execute_registered_step(step: Step, timeout: u32, config: &PathsConfig) -> Re
         .iter()
         .find(|definition| definition.step == step)
     else {
-        bail!("step is not registered: {:?}", step);
+        bail!("step is not registered: {step:?}");
     };
     (definition.runner)(definition, timeout, config)
 }
@@ -304,8 +304,7 @@ fn run_airports_step(
             &shared_connection(&config.db_output_path)?,
         )?;
         info!(
-            "Airports complete: inserted={}, inserted_zlyx={}",
-            inserted_count, inserted_zlyx
+            "Airports complete: inserted={inserted_count}, inserted_zlyx={inserted_zlyx}"
         );
         Ok(())
     })?;
@@ -327,8 +326,7 @@ fn run_runways_step(
                 &shared_connection(&config.db_output_path)?,
             )?;
         info!(
-            "Runways complete: inserted={}, supplementary={}, missing={}",
-            inserted_count, supplementary_count, missing_count
+            "Runways complete: inserted={inserted_count}, supplementary={supplementary_count}, missing={missing_count}"
         );
         if missing_count > 0 {
             info!(
@@ -398,8 +396,7 @@ fn run_terminal_waypoints_step(
             1000,
         )?;
         info!(
-            "Terminal waypoints complete: parsed={}, inserted={}",
-            parsed_count, new_count
+            "Terminal waypoints complete: parsed={parsed_count}, inserted={new_count}"
         );
         Ok(())
     })?;
@@ -431,8 +428,7 @@ fn run_airways_step(
             &shared_connection(&config.db_output_path)?,
         )?;
         info!(
-            "Airways complete: final_rows={}, updated_routes={}",
-            final_count, updated_routes
+            "Airways complete: final_rows={final_count}, updated_routes={updated_routes}"
         );
         Ok(())
     })?;
@@ -482,15 +478,14 @@ fn run_terminal_cifp_step(
 fn log_terminal_proc(step_name: &str, result: Result<(usize, usize)>) -> Result<()> {
     let (airport_count, total_processed) = result?;
     info!(
-        "{} complete: airports={}, processed={}",
-        step_name, airport_count, total_processed
+        "{step_name} complete: airports={airport_count}, processed={total_processed}"
     );
     Ok(())
 }
 
 fn log_insert_count(step_name: &str, result: Result<usize>) -> Result<()> {
     let inserted_count = result?;
-    info!("{} complete: inserted={}", step_name, inserted_count);
+    info!("{step_name} complete: inserted={inserted_count}");
     Ok(())
 }
 
@@ -503,7 +498,7 @@ fn run_step<T>(name: &str, action: impl FnOnce() -> Result<T>) -> Result<T> {
 }
 
 fn shared_connection(db_path: &str) -> Result<RustSqliteConnection> {
-    get_shared_connection(db_path)?
+    get_shared_connection(db_path)
         .ok_or_else(|| anyhow::anyhow!("shared connection not available for {db_path}"))
 }
 
@@ -554,7 +549,6 @@ fn drop_non_system_indexes_native(
             Ok(value) => return Ok(value),
             Err(err) if is_locked_error_message(&err) => {
                 thread::sleep(Duration::from_millis(retry_delay_ms));
-                continue;
             }
             Err(err) => return Err(err),
         }
@@ -575,7 +569,6 @@ fn vacuum_native(db_path: &str, timeout: u32, retries: usize, retry_delay_ms: u6
             Ok(value) => return Ok(value),
             Err(err) if is_locked_error_message(&err) => {
                 thread::sleep(Duration::from_millis(retry_delay_ms));
-                continue;
             }
             Err(err) => return Err(err),
         }
@@ -703,7 +696,7 @@ fn resolve_configured_path(base: &str, value: &str, allow_relative_to_base: bool
 fn optional_or_default(ini: &Ini, key: &str, default: PathBuf) -> String {
     let configured = ini.get("paths", key).unwrap_or_default();
     if configured.trim().is_empty() {
-        return default.to_string_lossy().into_owned();
+        return default.into_os_string().to_string_lossy().into_owned();
     }
     configured
 }

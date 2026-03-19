@@ -10,7 +10,7 @@ use std::sync::Once;
 
 static INIT_LOGGING: Once = Once::new();
 
-pub(crate) fn init_cli_logging() -> Result<Option<PathBuf>> {
+pub fn init_cli_logging() -> Result<Option<PathBuf>> {
     let mut init_result: Result<Option<PathBuf>> = Ok(None);
 
     INIT_LOGGING.call_once(|| {
@@ -24,7 +24,7 @@ fn init_cli_logging_once() -> Result<Option<PathBuf>> {
     let exe_dir = std::env::current_exe()
         .context("failed to resolve current executable path")?
         .parent()
-        .map(|path| path.to_path_buf())
+        .map(std::path::Path::to_path_buf)
         .context("failed to resolve executable directory")?;
 
     let log_dir = exe_dir.join("logs");

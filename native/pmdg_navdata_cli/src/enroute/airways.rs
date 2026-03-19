@@ -30,7 +30,7 @@ impl AirwayCodeType {
         }
     }
 
-    fn resolver_code(self) -> Option<&'static str> {
+    const fn resolver_code(self) -> Option<&'static str> {
         match self {
             Self::DesignatedPoint => Some("DESIGNATED_POINT"),
             Self::VorDme => Some("VORDME"),
@@ -152,9 +152,9 @@ impl AirwayCoordCache {
 
 #[derive(Default)]
 struct ResolverIdentifierSets {
-    fix_identifiers: HashSet<Box<str>>,
-    vor_dme_identifiers: HashSet<Box<str>>,
-    ndb_identifiers: HashSet<Box<str>>,
+    fix_points: HashSet<Box<str>>,
+    vor_dme_idents: HashSet<Box<str>>,
+    ndb_codes: HashSet<Box<str>>,
 }
 
 fn merge_airway_route_order(db_rows: &[DbRoutePoint], csv_rows: &[CsvRoutePoint]) -> Vec<String> {
@@ -197,10 +197,10 @@ fn merge_airway_route_order(db_rows: &[DbRoutePoint], csv_rows: &[CsvRoutePoint]
         if !common_flags[i] {
             continue;
         }
-        let Some(nxt_idx) = next_common_idx[i] else {
+        let Some(next_common_pos) = next_common_idx[i] else {
             continue;
         };
-        let next_common = db_points[nxt_idx];
+        let next_common = db_points[next_common_pos];
 
         let Some(idx_csv_current) = csv_index.get(wp) else {
             continue;
@@ -229,7 +229,7 @@ fn merge_airway_route_order(db_rows: &[DbRoutePoint], csv_rows: &[CsvRoutePoint]
 
 fn build_airway_segment_metrics(
     tasks: Vec<AirwaySegmentTask>,
-    declinations: Vec<f64>,
+    declinations: &[f64],
 ) -> Result<Vec<AirwaySegmentMetric>> {
     if tasks.len() != declinations.len() {
         return Err(anyhow!("tasks and declinations length mismatch"));
@@ -279,11 +279,10 @@ fn build_airway_merge_plan(
 
         let csv_points: HashSet<&str> = csv_rows.iter().map(|(wp, _)| wp.as_str()).collect();
         let has_overlap = db_rows_opt
-            .map(|rows| {
+            .is_some_and(|rows| {
                 rows.iter()
                     .any(|(wp, _, _)| csv_points.contains(wp.as_str()))
-            })
-            .unwrap_or(false);
+            });
 
         if !has_overlap {
             let max_seqno = db_rows_opt
@@ -297,7 +296,8 @@ fn build_airway_merge_plan(
             }
 
             for (i, (_, csv_idx)) in csv_rows.iter().enumerate() {
-                let seqno = max_seqno + 5 * (i as i64 + 1);
+                let index_i64 = i64::try_from(i).unwrap_or(i64::MAX - 1);
+                let seqno = max_seqno + 5 * (index_i64 + 1);
                 row_plan.push((RowSource::Csv, *csv_idx, Some(seqno)));
             }
             continue;
@@ -335,7 +335,8 @@ fn build_airway_merge_plan(
         }
 
         for (i, (source, idx)) in merged_sources.into_iter().enumerate() {
-            row_plan.push((source, idx, Some(1000 + i as i64 * 5)));
+            let index_i64 = i64::try_from(i).unwrap_or(i64::MAX / 5);
+            row_plan.push((source, idx, Some(1000 + index_i64 * 5)));
         }
         routes_with_missing.push(route.clone());
     }
@@ -409,7 +410,7 @@ fn parse_csv_header_indices_simple(line: &str) -> Result<[usize; 8]> {
         index_map
             .get(name)
             .copied()
-            .ok_or_else(|| anyhow!("required airway CSV column missing: {}", name))
+            .ok_or_else(|| anyhow!("required airway CSV column missing: {name}"))
     };
     let optional = |name: &str| index_map.get(name).copied().unwrap_or(usize::MAX);
 
@@ -441,10 +442,9 @@ fn extract_csv_fields_simple<'a, const N: usize>(
     let mut start = 0usize;
 
     loop {
-        let end = match trimmed[start..].find(',') {
-            Some(offset) => start + offset,
-            None => trimmed.len(),
-        };
+        let end = trimmed[start..]
+            .find(',')
+            .map_or(trimmed.len(), |offset| start + offset);
 
         for (slot, target_index) in indices.iter().enumerate() {
             if *target_index == field_index {
@@ -538,14 +538,14 @@ fn parse_airway_csv_rows_simple_from_bufread<R: BufRead>(
 
 fn read_text_gbk(file_path: &str) -> Result<String> {
     let bytes =
-        fs::read(file_path).map_err(|err| anyhow!("failed to read file {}: {}", file_path, err))?;
+        fs::read(file_path).map_err(|err| anyhow!("failed to read file {file_path}: {err}"))?;
     let (decoded, _, _) = GBK.decode(&bytes);
     Ok(decoded.into_owned())
 }
 
 fn open_dat_reader(file_path: &str) -> Result<BufReader<File>> {
     let file =
-        File::open(file_path).map_err(|err| anyhow!("failed to open {}: {}", file_path, err))?;
+        File::open(file_path).map_err(|err| anyhow!("failed to open {file_path}: {err}"))?;
     Ok(BufReader::with_capacity(DAT_READER_CAPACITY, file))
 }
 
@@ -556,17 +556,17 @@ fn collect_airways_resolver_identifiers(rows: &[ParsedAirwayCsvRow]) -> Resolver
         match row.start_code_type {
             AirwayCodeType::DesignatedPoint if !row.start_waypoint.is_empty() => {
                 identifiers
-                    .fix_identifiers
+                    .fix_points
                     .insert(row.start_waypoint.as_ref().into());
             }
             AirwayCodeType::VorDme if !row.start_waypoint.is_empty() => {
                 identifiers
-                    .vor_dme_identifiers
+                    .vor_dme_idents
                     .insert(row.start_waypoint.as_ref().into());
             }
             AirwayCodeType::Ndb if !row.start_waypoint.is_empty() => {
                 identifiers
-                    .ndb_identifiers
+                    .ndb_codes
                     .insert(row.start_waypoint.as_ref().into());
             }
             _ => {}
@@ -581,13 +581,13 @@ fn collect_airways_resolver_identifiers(rows: &[ParsedAirwayCsvRow]) -> Resolver
         };
         match row.end_code_type {
             Some(AirwayCodeType::DesignatedPoint) => {
-                identifiers.fix_identifiers.insert(end_waypoint.into());
+                identifiers.fix_points.insert(end_waypoint.into());
             }
             Some(AirwayCodeType::VorDme) => {
-                identifiers.vor_dme_identifiers.insert(end_waypoint.into());
+                identifiers.vor_dme_idents.insert(end_waypoint.into());
             }
             Some(AirwayCodeType::Ndb) => {
-                identifiers.ndb_identifiers.insert(end_waypoint.into());
+                identifiers.ndb_codes.insert(end_waypoint.into());
             }
             _ => {}
         }
@@ -747,16 +747,16 @@ fn get_scoped_airways_icao_resolver(
     earth_nav_file: &str,
     identifiers: &ResolverIdentifierSets,
 ) -> Result<IcaoCodeResolver> {
-    let fix_items = load_earth_fix_items(earth_fix_file, &identifiers.fix_identifiers)?;
+    let fix_items = load_earth_fix_items(earth_fix_file, &identifiers.fix_points)?;
     let nav_items = load_earth_nav_items(
         earth_nav_file,
-        &identifiers.vor_dme_identifiers,
-        &identifiers.ndb_identifiers,
+        &identifiers.vor_dme_idents,
+        &identifiers.ndb_codes,
     )?;
     Ok(IcaoCodeResolver::from_items(fix_items, nav_items))
 }
 
-fn start_code_mapping_from_type(
+const fn start_code_mapping_from_type(
     code_type: AirwayCodeType,
 ) -> Option<(&'static str, &'static str, &'static str)> {
     match code_type {
@@ -930,13 +930,13 @@ fn prefetch_airway_coordinates(
 
         let query_template = match aid_type {
             "fix" => {
-                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
+                "SELECT waypoint_identifier, waypoint_latitude, waypoint_longitude FROM tbl_enroute_waypoints WHERE waypoint_identifier IN (__PLACEHOLDERS__) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             "vhf" => {
-                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
+                "SELECT vor_identifier, vor_latitude, vor_longitude FROM tbl_vhfnavaids WHERE vor_identifier IN (__PLACEHOLDERS__) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             "ndb" => {
-                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN ({placeholders}) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
+                "SELECT ndb_identifier, ndb_latitude, ndb_longitude FROM tbl_enroute_ndbnavaids WHERE ndb_identifier IN (__PLACEHOLDERS__) AND icao_code IN ('ZW','ZG','ZS','ZY','ZL','ZH','ZU','ZP','ZB','ZJ','ZZ','VM','VH') ORDER BY rowid"
             }
             _ => continue,
         };
@@ -944,7 +944,7 @@ fn prefetch_airway_coordinates(
         let identifiers_list: Vec<String> = identifiers.into_iter().map(String::from).collect();
         for chunk in identifiers_list.chunks(500) {
             let placeholders = vec!["?"; chunk.len()].join(",");
-            let query = query_template.replace("{placeholders}", &placeholders);
+            let query = query_template.replace("__PLACEHOLDERS__", &placeholders);
             let params = chunk
                 .iter()
                 .map(|identifier| SqlValue::Text(identifier.clone()))
@@ -1012,12 +1012,12 @@ fn build_airway_reference_id(
 
     let raw_id = match ref_table {
         "tbl_enroute_waypoints" | "tbl_vhfnavaids" | "tbl_enroute_ndbnavaids" => {
-            format!("{}{}", icao_code, waypoint_identifier)
+            format!("{icao_code}{waypoint_identifier}")
         }
         _ => return None,
     };
 
-    Some(format!("{}|{}", ref_table, raw_id))
+    Some(format!("{ref_table}|{raw_id}"))
 }
 
 fn build_processed_airway_rows(
@@ -1092,9 +1092,7 @@ fn fetch_existing_airway_rows(
     for chunk in routes.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let query = format!(
-            "SELECT area_code, route_identifier, seqno, icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, route_type, flightlevel, direction_restriction, crusing_table_identifier, minimum_altitude1, minimum_altitude2, maximum_altitude, outbound_course, inbound_course, inbound_distance, id FROM {} WHERE route_identifier IN ({}) ORDER BY route_identifier, seqno",
-            ENROUTE_AIRWAYS_TABLE,
-            placeholders
+            "SELECT area_code, route_identifier, seqno, icao_code, waypoint_identifier, waypoint_latitude, waypoint_longitude, waypoint_description_code, route_type, flightlevel, direction_restriction, crusing_table_identifier, minimum_altitude1, minimum_altitude2, maximum_altitude, outbound_course, inbound_course, inbound_distance, id FROM {ENROUTE_AIRWAYS_TABLE} WHERE route_identifier IN ({placeholders}) ORDER BY route_identifier, seqno"
         );
         let params = chunk
             .iter()
@@ -1107,6 +1105,72 @@ fn fetch_existing_airway_rows(
         .map_err(sqlite_error)?;
     }
     Ok(out)
+}
+
+fn build_last_rows_by_route(
+    csv_rows: &[ParsedAirwayCsvRow],
+) -> HashMap<String, &ParsedAirwayCsvRow> {
+    let mut last_rows_by_route: HashMap<String, &ParsedAirwayCsvRow> = HashMap::new();
+    for row in csv_rows {
+        last_rows_by_route.insert(row.route_identifier.to_string(), row);
+    }
+    last_rows_by_route
+}
+
+fn build_end_payload(
+    route_order: &[String],
+    last_rows_by_route: &HashMap<String, &ParsedAirwayCsvRow>,
+) -> Vec<AirwayEndCsvLastRow> {
+    let mut payload: Vec<AirwayEndCsvLastRow> = Vec::new();
+    for route in route_order {
+        let Some(row) = last_rows_by_route.get(route) else {
+            continue;
+        };
+        payload.push((
+            row.route_identifier.to_string(),
+            row.end_waypoint.as_deref().map(str::to_string),
+            Some(row.outbound_course),
+            row.end_code_type,
+            row.direction_restriction.as_deref().map(str::to_string),
+        ));
+    }
+    payload
+}
+
+fn rebuild_rows_with_endpoints(
+    final_rows: &[AirwayRecord],
+    route_order: &[String],
+    end_rows_by_route: &mut HashMap<String, AirwayRecord>,
+    direction_map: &AirwayDirectionRouteMap,
+) -> Vec<AirwayRecord> {
+    let mut rebuilt_rows: Vec<AirwayRecord> =
+        Vec::with_capacity(final_rows.len() + end_rows_by_route.len());
+    let mut route_start = 0usize;
+    while route_start < final_rows.len() {
+        let route_identifier = final_rows[route_start].route_identifier.clone();
+        let mut route_end = route_start + 1;
+        while route_end < final_rows.len() && final_rows[route_end].route_identifier == route_identifier
+        {
+            route_end += 1;
+        }
+
+        let mut route_rows = final_rows[route_start..route_end].to_vec();
+        if let Some(end_row) = end_rows_by_route.remove(route_identifier.as_str()) {
+            route_rows.push(end_row);
+        }
+        apply_airway_direction_restrictions_to_route_rows(&mut route_rows, direction_map);
+        rebuilt_rows.extend(route_rows);
+
+        route_start = route_end;
+    }
+
+    for route in route_order {
+        if let Some(end_row) = end_rows_by_route.remove(route.as_str()) {
+            rebuilt_rows.push(end_row);
+        }
+    }
+
+    rebuilt_rows
 }
 
 fn append_airway_end_rows(
@@ -1145,24 +1209,8 @@ fn append_airway_end_rows(
     }
     let max_seq_items: Vec<MaxSeqItem> = max_seq_map.into_iter().collect();
 
-    let mut last_rows_by_route: HashMap<String, &ParsedAirwayCsvRow> = HashMap::new();
-    for row in csv_rows {
-        last_rows_by_route.insert(row.route_identifier.to_string(), row);
-    }
-
-    let mut payload: Vec<AirwayEndCsvLastRow> = Vec::new();
-    for route in route_order {
-        let Some(row) = last_rows_by_route.get(route) else {
-            continue;
-        };
-        payload.push((
-            row.route_identifier.to_string(),
-            row.end_waypoint.as_deref().map(str::to_string),
-            Some(row.outbound_course),
-            row.end_code_type,
-            row.direction_restriction.as_deref().map(str::to_string),
-        ));
-    }
+    let last_rows_by_route = build_last_rows_by_route(csv_rows);
+    let payload = build_end_payload(route_order, &last_rows_by_route);
 
     let end_plan = build_airway_end_append_plan(payload, existing_route_wps, max_seq_items);
     let mut end_rows_by_route: HashMap<String, AirwayRecord> =
@@ -1212,35 +1260,12 @@ fn append_airway_end_rows(
         );
     }
 
-    let mut rebuilt_rows: Vec<AirwayRecord> =
-        Vec::with_capacity(final_rows.len() + end_rows_by_route.len());
-    let mut route_start = 0usize;
-    while route_start < final_rows.len() {
-        let route_identifier = final_rows[route_start].route_identifier.clone();
-        let mut route_end = route_start + 1;
-        while route_end < final_rows.len()
-            && final_rows[route_end].route_identifier == route_identifier
-        {
-            route_end += 1;
-        }
-
-        let mut route_rows = final_rows[route_start..route_end].to_vec();
-        if let Some(end_row) = end_rows_by_route.remove(route_identifier.as_str()) {
-            route_rows.push(end_row);
-        }
-        apply_airway_direction_restrictions_to_route_rows(&mut route_rows, &direction_map);
-        rebuilt_rows.extend(route_rows);
-
-        route_start = route_end;
-    }
-
-    for route in route_order {
-        if let Some(end_row) = end_rows_by_route.remove(route.as_str()) {
-            rebuilt_rows.push(end_row);
-        }
-    }
-
-    *final_rows = rebuilt_rows;
+    *final_rows = rebuild_rows_with_endpoints(
+        final_rows,
+        route_order,
+        &mut end_rows_by_route,
+        &direction_map,
+    );
 }
 
 fn bind_airway_row(stmt: &mut rusqlite::Statement<'_>, row: &AirwayRecord) -> rusqlite::Result<()> {
@@ -1383,7 +1408,7 @@ fn apply_airway_segment_metrics(
     }
 
     for (current_idx, next_idx, inbound_distance, outbound_course) in
-        build_airway_segment_metrics(tasks, declinations)?
+        build_airway_segment_metrics(tasks, &declinations)?
     {
         rows[current_idx].inbound_distance = inbound_distance;
         rows[current_idx].outbound_course = outbound_course;
@@ -1393,14 +1418,14 @@ fn apply_airway_segment_metrics(
     Ok(())
 }
 
-pub(crate) fn process_airways_to_db(
+pub fn process_airways_to_db(
     csv_file: &str,
     earth_fix_file: &str,
     earth_nav_file: &str,
     conn: &RustSqliteConnection,
 ) -> Result<(usize, usize)> {
     let csv_rows = parse_airway_csv_rows(csv_file)
-        .map_err(|err| anyhow!("parse_airway_csv_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_airway_csv_rows failed: {err}"))?;
 
     conn.execute_statement_native("CREATE TABLE IF NOT EXISTS tbl_enroute_airways (area_code TEXT(3), route_identifier TEXT(6), seqno INTEGER(4), icao_code TEXT(2), waypoint_identifier TEXT(5), waypoint_latitude DOUBLE(9), waypoint_longitude DOUBLE(10), waypoint_description_code TEXT(4), route_type TEXT(1), flightlevel TEXT(1), direction_restriction TEXT(1), crusing_table_identifier TEXT(2), minimum_altitude1 INTEGER(5), minimum_altitude2 INTEGER(5), maximum_altitude INTEGER(5), outbound_course DOUBLE(5), inbound_course DOUBLE(5), inbound_distance DOUBLE(5), id TEXT(15))", &[]).map_err(sqlite_error)?;
     conn.execute_statement_native("CREATE INDEX IF NOT EXISTS idx_enroute_airways_route_seq ON tbl_enroute_airways(route_identifier, seqno)", &[]).map_err(sqlite_error)?;
@@ -1413,10 +1438,10 @@ pub(crate) fn process_airways_to_db(
 
     let icao_resolver =
         get_scoped_airways_icao_resolver(earth_fix_file, earth_nav_file, &resolver_identifiers)
-            .map_err(|err| anyhow!("get_scoped_airways_icao_resolver failed: {}", err))?;
+            .map_err(|err| anyhow!("get_scoped_airways_icao_resolver failed: {err}"))?;
 
     let coord_cache = prefetch_airway_coordinates(conn, &csv_rows)
-        .map_err(|err| anyhow!("prefetch_airway_coordinates failed: {}", err))?;
+        .map_err(|err| anyhow!("prefetch_airway_coordinates failed: {err}"))?;
 
     let processed_rows = build_processed_airway_rows(&csv_rows, &coord_cache, &icao_resolver);
 
@@ -1429,7 +1454,7 @@ pub(crate) fn process_airways_to_db(
     }
 
     let db_rows_all = fetch_existing_airway_rows(conn, &unique_routes)
-        .map_err(|err| anyhow!("fetch_existing_airway_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("fetch_existing_airway_rows failed: {err}"))?;
 
     let mut csv_route_map: CsvRouteMap = HashMap::new();
     for (idx, record) in processed_rows.iter().enumerate() {
@@ -1465,8 +1490,7 @@ pub(crate) fn process_airways_to_db(
     for chunk in routes_to_delete.chunks(500) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let query = format!(
-            "DELETE FROM {} WHERE route_identifier IN ({})",
-            ENROUTE_AIRWAYS_TABLE, placeholders
+            "DELETE FROM {ENROUTE_AIRWAYS_TABLE} WHERE route_identifier IN ({placeholders})"
         );
         let params = chunk
             .iter()
@@ -1491,19 +1515,19 @@ pub(crate) fn process_airways_to_db(
     );
 
     apply_airway_segment_metrics(&mut final_rows, &routes_with_missing)
-        .map_err(|err| anyhow!("apply_airway_segment_metrics failed: {}", err))?;
+        .map_err(|err| anyhow!("apply_airway_segment_metrics failed: {err}"))?;
 
     insert_airway_rows(conn, &final_rows, 2000)
-        .map_err(|err| anyhow!("insert_airway_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("insert_airway_rows failed: {err}"))?;
 
     Ok((final_rows.len(), routes_with_missing.len()))
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }
 
-pub(crate) fn parse_dms_list(values: Vec<Option<String>>) -> Vec<Option<f64>> {
+pub fn parse_dms_list(values: Vec<Option<String>>) -> Vec<Option<f64>> {
     values
         .into_iter()
         .map(|v| v.as_deref().and_then(parse_dms_to_decimal))
@@ -1542,7 +1566,7 @@ fn build_airway_end_append_plan(
             } else if end_code_type == Some(AirwayCodeType::Ndb) {
                 ("EEC".to_string(), "tbl_enroute_ndbnavaids".to_string())
             } else {
-                ("".to_string(), "".to_string())
+                (String::new(), String::new())
             };
 
         let current_max_seq = *max_seq_map.get(&route).unwrap_or(&1000);
@@ -1633,7 +1657,7 @@ mod tests {
         ];
         let declinations = vec![0.0, 0.0, 0.0];
 
-        let metrics = build_airway_segment_metrics(tasks, declinations).unwrap();
+        let metrics = build_airway_segment_metrics(tasks, &declinations).unwrap();
 
         assert_eq!(metrics.len(), 3);
 
@@ -1654,7 +1678,7 @@ mod tests {
         let tasks = vec![(0, 1, Some(30.0), Some(120.0), Some(31.0), Some(121.0))];
         let declinations = vec![];
 
-        let result = build_airway_segment_metrics(tasks, declinations);
+        let result = build_airway_segment_metrics(tasks, &declinations);
         assert!(result.is_err());
     }
 

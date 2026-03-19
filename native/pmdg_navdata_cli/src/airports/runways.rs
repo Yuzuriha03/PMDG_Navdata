@@ -2,6 +2,7 @@ use crate::core::db::RustSqliteConnection;
 use anyhow::{anyhow, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
 use encoding_rs::Encoding;
+use num_traits::ToPrimitive;
 use rusqlite::types::Value as SqlValue;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -65,7 +66,7 @@ fn area_code_for_icao(icao_code: &str) -> &'static str {
     }
 }
 
-fn build_insert_sql() -> &'static str {
+const fn build_insert_sql() -> &'static str {
     "INSERT OR IGNORE INTO tbl_runways (area_code, icao_code, airport_identifier, runway_identifier, runway_latitude, runway_longitude, runway_gradient, runway_magnetic_bearing, runway_true_bearing, landing_threshold_elevation, displaced_threshold_distance, threshold_crossing_height, runway_length, runway_width, llz_identifier, llz_mls_gls_category, surface_code, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 }
 
@@ -74,31 +75,41 @@ fn python_round(value: f64) -> i64 {
     let fractional = value - truncated;
     let abs_fractional = fractional.abs();
     if (abs_fractional - 0.5).abs() > 1e-12 {
-        return value.round() as i64;
+        return value
+            .round()
+            .to_i64()
+            .unwrap_or_else(|| if value.is_sign_negative() { i64::MIN } else { i64::MAX });
     }
 
     let lower = value.floor();
     let upper = value.ceil();
-    let lower_int = lower as i64;
-    let upper_int = upper as i64;
+    let lower_int = lower
+        .to_i64()
+        .unwrap_or_else(|| if lower.is_sign_negative() { i64::MIN } else { i64::MAX });
+    let upper_int = upper
+        .to_i64()
+        .unwrap_or_else(|| if upper.is_sign_negative() { i64::MIN } else { i64::MAX });
     if lower_int % 2 == 0 {
         lower_int
     } else if upper_int % 2 == 0 {
         upper_int
     } else {
-        value.round() as i64
+        value
+            .round()
+            .to_i64()
+            .unwrap_or_else(|| if value.is_sign_negative() { i64::MIN } else { i64::MAX })
     }
 }
 
 fn decode_latin1_file(file_path: &str) -> Result<String> {
     let bytes =
-        fs::read(file_path).map_err(|err| anyhow!("failed to read {}: {}", file_path, err))?;
+        fs::read(file_path).map_err(|err| anyhow!("failed to read {file_path}: {err}"))?;
     Ok(bytes.into_iter().map(char::from).collect())
 }
 
 fn decode_gb18030_file(file_path: &str) -> Result<String> {
     let bytes =
-        fs::read(file_path).map_err(|err| anyhow!("failed to read {}: {}", file_path, err))?;
+        fs::read(file_path).map_err(|err| anyhow!("failed to read {file_path}: {err}"))?;
     let encoding = Encoding::for_label(b"gb18030")
         .ok_or_else(|| anyhow!("gb18030 encoding is unavailable"))?;
     let (text, _, _) = encoding.decode(&bytes);
@@ -109,7 +120,7 @@ fn required_index(headers: &StringRecord, column: &str) -> Result<usize> {
     headers
         .iter()
         .position(|value| value == column)
-        .ok_or_else(|| anyhow!("required runway CSV column missing: {}", column))
+        .ok_or_else(|| anyhow!("required runway CSV column missing: {column}"))
 }
 
 fn optional_index(headers: &StringRecord, column: &str) -> Option<usize> {
@@ -136,7 +147,7 @@ fn parse_first_csv(file_path: &str) -> Result<Vec<FirstCsvRow>> {
         .from_reader(content.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| anyhow!("failed to read runway direction CSV headers: {}", err))?
+        .map_err(|err| anyhow!("failed to read runway direction CSV headers: {err}"))?
         .clone();
 
     let rwy_id_idx = required_index(&headers, "RWY_ID")?;
@@ -148,7 +159,7 @@ fn parse_first_csv(file_path: &str) -> Result<Vec<FirstCsvRow>> {
     let mut rows = Vec::new();
     for record in reader.records() {
         let record =
-            record.map_err(|err| anyhow!("failed to parse runway direction CSV row: {}", err))?;
+            record.map_err(|err| anyhow!("failed to parse runway direction CSV row: {err}"))?;
         let Some(rwy_id) = record
             .get(rwy_id_idx)
             .map(str::trim)
@@ -180,7 +191,7 @@ fn parse_second_csv(file_path: &str) -> Result<HashMap<String, SecondCsvRow>> {
         .from_reader(content.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| anyhow!("failed to read runway CSV headers: {}", err))?
+        .map_err(|err| anyhow!("failed to read runway CSV headers: {err}"))?
         .clone();
 
     let rwy_id_idx = required_index(&headers, "RWY_ID")?;
@@ -191,7 +202,7 @@ fn parse_second_csv(file_path: &str) -> Result<HashMap<String, SecondCsvRow>> {
 
     let mut rows = HashMap::new();
     for record in reader.records() {
-        let record = record.map_err(|err| anyhow!("failed to parse runway CSV row: {}", err))?;
+        let record = record.map_err(|err| anyhow!("failed to parse runway CSV row: {err}"))?;
         let Some(rwy_id) = record
             .get(rwy_id_idx)
             .map(str::trim)
@@ -211,7 +222,7 @@ fn parse_second_csv(file_path: &str) -> Result<HashMap<String, SecondCsvRow>> {
                 val_len: optional_f64(&record, val_len_idx),
                 val_wid: optional_f64(&record, val_wid_idx),
                 num_surface: optional_f64(&record, num_surface_idx)
-                    .map(|value| value as i64)
+                    .and_then(|value| value.to_i64())
                     .unwrap_or(103),
             },
         );
@@ -227,14 +238,14 @@ fn parse_magvar_csv(file_path: &str) -> Result<HashMap<String, f64>> {
         .from_reader(content.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| anyhow!("failed to read airport CSV headers: {}", err))?
+        .map_err(|err| anyhow!("failed to read airport CSV headers: {err}"))?
         .clone();
 
     let code_id_idx = required_index(&headers, "CODE_ID")?;
     let val_mag_var_idx = optional_index(&headers, "VAL_MAG_VAR");
     let mut out = HashMap::new();
     for record in reader.records() {
-        let record = record.map_err(|err| anyhow!("failed to parse airport CSV row: {}", err))?;
+        let record = record.map_err(|err| anyhow!("failed to parse airport CSV row: {err}"))?;
         let Some(code_id) = record
             .get(code_id_idx)
             .map(str::trim)
@@ -385,8 +396,7 @@ fn build_primary_rows(
             airport_data.get(&(airport_icao.clone(), runway_identifier.to_string()))
         else {
             missing.push(format!(
-                "Missing coordinates for {} RW{}",
-                airport_icao, runway_identifier
+                "Missing coordinates for {airport_icao} RW{runway_identifier}"
             ));
             continue;
         };
@@ -403,12 +413,10 @@ fn build_primary_rows(
         let mag_bearing = python_round(true_bearing - mag_var);
         let threshold_elev = row
             .val_elev
-            .map(|value| python_round(value * FEET_PER_METER))
-            .unwrap_or(0);
+            .map_or(0, |value| python_round(value * FEET_PER_METER));
         let displaced_dist = row
             .val_thr_displace
-            .map(|value| python_round(value * FEET_PER_METER))
-            .unwrap_or(0);
+            .map_or(0, |value| python_round(value * FEET_PER_METER));
         let runway_length = python_round(runway_length_m * FEET_PER_METER);
         let runway_width = python_round(runway_width_m * FEET_PER_METER);
         let (llz_identifier, llz_mls_gls_category) =
@@ -432,14 +440,19 @@ fn build_primary_rows(
             runway_latitude: ((*runway_lat * 1e8).round()) / 1e8,
             runway_length,
             runway_longitude: ((*runway_lon * 1e8).round()) / 1e8,
-            runway_magnetic_bearing: mag_bearing as f64,
+            runway_magnetic_bearing: mag_bearing.to_f64().unwrap_or_else(|| {
+                if mag_bearing.is_negative() {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                }
+            }),
             runway_true_bearing: true_bearing,
             runway_width,
             surface_code: surface_code_from_num_surface(runway_data.num_surface),
             threshold_crossing_height: 50,
             id: format!(
-                "{}{}{}",
-                airport_icao, icao_code, formatted_runway_identifier
+                "{airport_icao}{icao_code}{formatted_runway_identifier}"
             ),
         });
     }
@@ -459,8 +472,7 @@ fn build_supplementary_rows(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "SELECT ICAO, ident, lati, longi, length, width, geo, mag, alt FROM runway WHERE ICAO IN ({})",
-        placeholders
+        "SELECT ICAO, ident, lati, longi, length, width, geo, mag, alt FROM runway WHERE ICAO IN ({placeholders})"
     );
     let params = SUPPLEMENTARY_ICAOS
         .iter()
@@ -493,7 +505,7 @@ fn build_supplementary_rows(
                 return Ok(());
             };
 
-            let runway_identifier = format!("RW{}", ident);
+            let runway_identifier = format!("RW{ident}");
             if existing_runways.contains(&(icao.clone(), runway_identifier.clone())) {
                 return Ok(());
             }
@@ -522,7 +534,7 @@ fn build_supplementary_rows(
                 runway_width: python_round(runway_width_m * FEET_PER_METER),
                 surface_code: "CONC".to_string(),
                 threshold_crossing_height: 50,
-                id: format!("{}{}{}", icao, icao_code, runway_identifier),
+                id: format!("{icao}{icao_code}{runway_identifier}"),
             });
             Ok(())
         })
@@ -589,7 +601,7 @@ fn insert_rows(conn: &RustSqliteConnection, rows: &[RunwayInsertRow]) -> Result<
     Ok(())
 }
 
-pub(crate) fn process_runways_to_db(
+pub fn process_runways_to_db(
     nd_db_path: &str,
     path_to_first_csv: &str,
     path_to_second_csv: &str,
@@ -597,20 +609,20 @@ pub(crate) fn process_runways_to_db(
     conn: &RustSqliteConnection,
 ) -> Result<(usize, usize, usize, Vec<String>)> {
     let first_rows = parse_first_csv(path_to_first_csv)
-        .map_err(|err| anyhow!("parse_first_csv failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_first_csv failed: {err}"))?;
     let second_by_id = parse_second_csv(path_to_second_csv)
-        .map_err(|err| anyhow!("parse_second_csv failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_second_csv failed: {err}"))?;
     let magvar_map = parse_magvar_csv(path_to_magvar_csv)
-        .map_err(|err| anyhow!("parse_magvar_csv failed: {}", err))?;
+        .map_err(|err| anyhow!("parse_magvar_csv failed: {err}"))?;
     let airport_data = load_airport_data(nd_db_path)
-        .map_err(|err| anyhow!("load_airport_data failed: {}", err))?;
+        .map_err(|err| anyhow!("load_airport_data failed: {err}"))?;
     if airport_data.is_empty() {
         return Err(anyhow!(
             "No airport data loaded. Check the master.db3 file."
         ));
     }
     let ils_map =
-        load_ils_map(nd_db_path).map_err(|err| anyhow!("load_ils_map failed: {}", err))?;
+        load_ils_map(nd_db_path).map_err(|err| anyhow!("load_ils_map failed: {err}"))?;
 
     conn.execute_statement_native("\n    DELETE FROM tbl_runways WHERE airport_identifier IN ('ZL02', 'ZL03', 'ZW01', 'ZW02');\n    ", &[])
         .map_err(sqlite_error)?;
@@ -620,7 +632,7 @@ pub(crate) fn process_runways_to_db(
         .map_err(sqlite_error)?;
 
     let mut existing_runways = fetch_existing_runways(conn)
-        .map_err(|err| anyhow!("fetch_existing_runways failed: {}", err))?;
+        .map_err(|err| anyhow!("fetch_existing_runways failed: {err}"))?;
     let (primary_rows, missing_coordinates) = build_primary_rows(
         &first_rows,
         &second_by_id,
@@ -637,12 +649,12 @@ pub(crate) fn process_runways_to_db(
     }
 
     let supplementary_rows = build_supplementary_rows(nd_db_path, &existing_runways, &ils_map)
-        .map_err(|err| anyhow!("build_supplementary_rows failed: {}", err))?;
+        .map_err(|err| anyhow!("build_supplementary_rows failed: {err}"))?;
 
     insert_rows(conn, &primary_rows)
-        .map_err(|err| anyhow!("insert primary runway rows failed: {}", err))?;
+        .map_err(|err| anyhow!("insert primary runway rows failed: {err}"))?;
     insert_rows(conn, &supplementary_rows)
-        .map_err(|err| anyhow!("insert supplementary runway rows failed: {}", err))?;
+        .map_err(|err| anyhow!("insert supplementary runway rows failed: {err}"))?;
 
     let missing_count = missing_coordinates.len();
     let missing_samples = missing_coordinates.into_iter().take(5).collect::<Vec<_>>();
@@ -655,5 +667,5 @@ pub(crate) fn process_runways_to_db(
 }
 
 fn sqlite_error(err: rusqlite::Error) -> anyhow::Error {
-    anyhow!(err.to_string())
+    err.into()
 }
