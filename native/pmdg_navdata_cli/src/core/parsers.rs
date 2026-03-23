@@ -41,7 +41,7 @@ fn parse_waypoint_type_decimal(code: &str) -> Option<String> {
 fn is_supported_region(icao: &str) -> bool {
     matches!(
         icao,
-        "VH" | "VM" | "ZB" | "ZS" | "ZH" | "ZG" | "ZY" | "ZU" | "ZW" | "ZL" | "ZJ" | "ZP" | "ZZ"
+        "OP" | "VH" | "VM" | "ZB" | "ZG" | "ZH" | "ZJ" | "ZL" | "ZP" | "ZS" | "ZU" | "ZW" | "ZY" | "ZZ"
     )
 }
 
