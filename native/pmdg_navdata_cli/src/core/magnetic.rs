@@ -575,8 +575,8 @@ fn get_magnetic_variation(lat: f64, lon: f64, use_cache: bool) -> Result<f64> {
 }
 
 #[cfg(test)]
-fn batch_get_magnetic_variations(coordinates: Vec<(f64, f64)>) -> Result<Vec<f64>> {
-    batch_get_magnetic_variations_internal(&coordinates)
+fn batch_get_magnetic_variations(coordinates: &[(f64, f64)]) -> Result<Vec<f64>> {
+    batch_get_magnetic_variations_internal(coordinates)
 }
 
 #[cfg(test)]
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn computes_batch_declinations() {
-        let values = batch_get_magnetic_variations(vec![(30.0, 120.0), (31.0, 121.0)]).unwrap();
+        let values = batch_get_magnetic_variations(&[(30.0, 120.0), (31.0, 121.0)]).unwrap();
         assert_eq!(values.len(), 2);
     }
 

@@ -58,8 +58,7 @@ impl CellValue {
 
     fn as_f64(&self) -> Option<f64> {
         match self {
-            Self::Null => None,
-            Self::Integer(value) => Some(*value as f64),
+            Self::Integer(value) => value.to_string().parse::<f64>().ok(),
             Self::Real(bits) => Some(f64::from_bits(*bits)),
             Self::Text(value) => {
                 let trimmed = value.trim();
@@ -68,7 +67,7 @@ impl CellValue {
                 }
                 trimmed.parse::<f64>().ok()
             }
-            Self::Blob(_) => None,
+            Self::Null | Self::Blob(_) => None,
         }
     }
 
@@ -249,12 +248,8 @@ fn run() -> Result<i32> {
     Ok(exit_code_for_diff(diff_exists, cli.fail_on_diff))
 }
 
-fn exit_code_for_diff(diff_exists: bool, fail_on_diff: bool) -> i32 {
-    if diff_exists && fail_on_diff {
-        1
-    } else {
-        0
-    }
+const fn exit_code_for_diff(diff_exists: bool, fail_on_diff: bool) -> i32 {
+    (diff_exists && fail_on_diff) as i32
 }
 
 fn quote_ident(name: &str) -> String {
@@ -549,14 +544,14 @@ fn normalized_group_expr(column_name: &str, digits: Option<u32>) -> String {
 }
 
 fn normalized_select_expr(column_name: &str, digits: Option<u32>) -> String {
-    match digits {
-        Some(digits) => format!(
+    digits.map_or_else(
+        || quote_ident(column_name),
+        |digits| format!(
             "{} AS {}",
             normalized_group_expr(column_name, Some(digits)),
             quote_ident(column_name)
         ),
-        None => quote_ident(column_name),
-    }
+    )
 }
 
 fn column_exprs(table: &str, columns: &[ColumnInfo]) -> (String, String) {
@@ -670,8 +665,12 @@ fn compare_with_tolerance(
     let mut sample_only_in_b = Vec::new();
 
     for key in all_keys {
-        let left_rows = groups_a.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-        let right_rows = groups_b.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+        let left_rows = groups_a
+            .get(&key)
+            .map_or_else(|| &[][..], Vec::as_slice);
+        let right_rows = groups_b
+            .get(&key)
+            .map_or_else(|| &[][..], Vec::as_slice);
         let mut used_right = HashSet::new();
 
         for left_row in left_rows {
@@ -740,7 +739,8 @@ fn count_grouped_diff(
         )"
     );
     let count = conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?;
-    Ok(count.max(0) as usize)
+    let non_negative_count = count.max(0);
+    usize::try_from(non_negative_count).context("grouped diff count exceeds usize")
 }
 
 fn sample_grouped_diff(

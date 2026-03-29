@@ -339,8 +339,8 @@ mod tests {
             "WADON".to_string(),
             "WADON".to_string(),
             "WMZ".to_string(),
-            39.49556389,
-            -84.30007778,
+            39.495_563_89,
+            -84.300_077_78,
         );
         let query = "INSERT INTO test_terminal_waypoints_new (region_code, icao_code, waypoint_identifier, id) VALUES (?, ?, ?, ?)";
 

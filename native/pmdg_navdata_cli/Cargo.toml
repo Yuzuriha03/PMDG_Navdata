@@ -2,6 +2,12 @@
 name = "pmdg_navdata_cli"
 version = "0.1.0"
 edition = "2021"
+description = "CLI for building PMDG navdata SQLite databases from source datasets"
+license-file = "../../LICENSE"
+repository = "https://github.com/Yuzuriha03/PMDG_Navdata.git"
+readme = "../README.md"
+keywords = ["pmdg", "navdata", "aviation", "sqlite", "cli"]
+categories = ["command-line-utilities", "database"]
 
 [features]
 default = ["sqlite-bundled"]

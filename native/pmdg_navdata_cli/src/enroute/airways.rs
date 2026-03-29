@@ -1599,7 +1599,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("{}_{}.dat", prefix, unique));
+        let path = std::env::temp_dir().join(format!("{prefix}_{unique}.dat"));
         fs::write(&path, contents).unwrap();
         path.to_string_lossy().into_owned()
     }
@@ -1666,11 +1666,11 @@ mod tests {
         assert!(metrics[0].2 > 0.0);
         assert!((0.0..=360.0).contains(&metrics[0].3));
 
-        assert_eq!(metrics[1].2, 0.0);
-        assert_eq!(metrics[1].3, 0.0);
+        assert!(metrics[1].2.abs() < f64::EPSILON);
+        assert!(metrics[1].3.abs() < f64::EPSILON);
 
-        assert_eq!(metrics[2].2, 0.0);
-        assert_eq!(metrics[2].3, 0.0);
+        assert!(metrics[2].2.abs() < f64::EPSILON);
+        assert!(metrics[2].3.abs() < f64::EPSILON);
     }
 
     #[test]

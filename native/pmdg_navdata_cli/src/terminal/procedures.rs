@@ -1366,7 +1366,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("pmdg_navdata_cli_terminal_test_{}", unique));
+        let dir = std::env::temp_dir().join(format!("pmdg_navdata_cli_terminal_test_{unique}"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("ZBAA.dat"), "x").unwrap();
         std::fs::write(dir.join("KJFK.dat"), "x").unwrap();
@@ -1397,16 +1397,16 @@ mod tests {
         let left = MatchCacheLookupKey::new(
             MatchRequestKind::Waypoint,
             Some("FIX01"),
-            Some(35.1234567841),
-            Some(120.9876543249),
+            Some(35.123_456_784_1),
+            Some(120.987_654_324_9),
             true,
             Some("ZBAA"),
         );
         let right = MatchCacheLookupKey::new(
             MatchRequestKind::Waypoint,
             Some("FIX01"),
-            Some(35.1234567844),
-            Some(120.9876543246),
+            Some(35.123_456_784_4),
+            Some(120.987_654_324_6),
             true,
             Some("ZBAA"),
         );
@@ -1421,7 +1421,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{unique}.db"));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
         conn.execute_statement_native(
@@ -1464,7 +1464,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{unique}.db"));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
 
@@ -1507,7 +1507,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{unique}.db"));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
 
@@ -1569,7 +1569,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{unique}.db"));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
 
@@ -1645,7 +1645,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let db_path =
-            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{}.db", unique));
+            std::env::temp_dir().join(format!("pmdg_navdata_cli_proc_test_{unique}.db"));
         let db_path_str = db_path.to_string_lossy().into_owned();
         let conn = RustSqliteConnection::open_native(&db_path_str, 30).unwrap();
 
@@ -1687,7 +1687,7 @@ mod tests {
         assert!(remaining.contains(&("ZULS".to_string(), "KEEP".to_string())));
         assert!(!remaining
             .iter()
-            .any(|(a, p)| a == "ZULS" && p.starts_with("R")));
+            .any(|(a, p)| a == "ZULS" && p.starts_with('R')));
 
         conn.close_native();
         let _ = std::fs::remove_file(db_path);

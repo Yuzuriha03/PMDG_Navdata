@@ -2,6 +2,12 @@
 name = "compare_databases"
 version = "0.1.0"
 edition = "2021"
+description = "SQLite diff utility for validating PMDG navdata database output"
+license-file = "../../LICENSE"
+repository = "https://github.com/Yuzuriha03/PMDG_Navdata.git"
+readme = "../README.md"
+keywords = ["sqlite", "diff", "navdata", "validation", "cli"]
+categories = ["command-line-utilities", "database"]
 
 [[bin]]
 name = "compare_databases"
